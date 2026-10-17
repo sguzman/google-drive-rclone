@@ -139,11 +139,59 @@ def local_candidates(item, by_id, archive):
     return [folder / safe_name(output_name(item))]
 
 
-def recovery_dir(item, by_id, recovered):
+def legacy_recovery_dir(item, by_id, recovered):
+    """Original per-file directory layout; only checked, never deleted or rewritten."""
     folder = recovered
     for name, folder_id in folder_components(item, by_id):
         folder = folder / (name + '--' + digest_id(folder_id)[:24])
     return folder / ('id-' + digest_id(item['id']))
+
+
+def compact_destination(item, by_id, collision_ids, recovered):
+    """Mirror the source tree, disambiguating only colliding dirs and filenames.
+
+    File IDs go into the *filename*, not a new one-file directory.
+    """
+    folder = recovered
+    for name, folder_id in folder_components(item, by_id):
+        if folder_id in collision_ids:
+            name = name + '--' + digest_id(folder_id)[:16]
+        folder = folder / name
+    filename = safe_name(output_name(item))
+    stem, ext = os.path.splitext(filename)
+    return folder / (stem + '--' + digest_id(item['id'])[:16] + ext)
+
+
+def safety_check(path, archive):
+    """Never follow symlinks within the recovery tree or out of the archive."""
+    if archive.is_symlink():
+        return False
+    current = path
+    while current != archive:
+        if current.is_symlink():
+            return False
+        if archive not in current.parents:
+            return False
+        current = current.parent
+    return True
+
+
+def verified_manifest(item, file_path, manifest_path):
+    """Return True only if a manifest and its file are both verified.
+
+    Raise ValueError on damaged or inconsistent prior state, without changing it.
+    """
+    if not manifest_path.is_file() or manifest_path.is_symlink():
+        raise ValueError('Missing or unsafe provenance sidecar: ' + str(manifest_path))
+    record = json.loads(manifest_path.read_text())
+    if record.get('id') != item['id'] or not file_path.is_file() or file_path.is_symlink():
+        raise ValueError('Incorrect ID or missing recovered file: ' + str(file_path))
+    local_md5 = md5_file(file_path)
+    if record.get('local_md5') != local_md5:
+        raise ValueError('Recovered bytes changed: ' + str(file_path))
+    if item.get('md5Checksum') and not file_matches(item, file_path):
+        raise ValueError('Recovered bytes differ from Drive: ' + str(file_path))
+    return True
 
 
 def file_matches(item, path):
@@ -174,7 +222,7 @@ def unique_candidates(candidates):
 
 def probe_candidate(items, archive, max_bytes=1024 * 1024):
     """Choose the smallest not-yet-backed-up binary file with a cloud checksum."""
-    by_id, _, candidates, _ = plan(items)
+    by_id, _, candidates, collision_ids = plan(items)
     options = []
     for item, reason in unique_candidates(candidates):
         if reason or not item.get('md5Checksum'):
@@ -188,8 +236,10 @@ def probe_candidate(items, archive, max_bytes=1024 * 1024):
         if any(file_matches(item, candidate)
                for candidate in local_candidates(item, by_id, archive)):
             continue
-        destination = recovery_dir(item, by_id, archive / '.rclone-duplicates')
-        if destination.exists():
+        recovered = archive / '.rclone-duplicates'
+        destination = compact_destination(item, by_id, collision_ids, recovered)
+        legacy = legacy_recovery_dir(item, by_id, recovered)
+        if destination.exists() or legacy.exists():
             continue
         options.append((size, item['id'], item))
     return min(options, default=(None, None, None))[-1]
@@ -198,7 +248,7 @@ def probe_candidate(items, archive, max_bytes=1024 * 1024):
 def run_recovery(items, archive, runner=subprocess.run, dry_run=False,
                  max_downloads=1, sample_limit=8, verbose=False,
                  only_ids=None, bandwidth='512K'):
-    by_id, siblings, candidates, duplicate_folders = plan(items)
+    by_id, _, candidates, duplicate_folders = plan(items)
     recovered = archive / '.rclone-duplicates'
     folder_names = sorted({by_id[oid]['name'] for oid in duplicate_folders})
     summary = {'duplicate_folder_ids': len(duplicate_folders),
@@ -207,6 +257,7 @@ def run_recovery(items, archive, runner=subprocess.run, dry_run=False,
                'would_download': 0, 'downloaded': 0, 'attempted': 0,
                'already_archived': 0, 'already_recovered': 0,
                'identical_source': 0, 'unsupported': 0, 'errors': []}
+
     for item, reason in unique_candidates(candidates):
         if only_ids is not None and item['id'] not in only_ids:
             continue
@@ -217,69 +268,96 @@ def run_recovery(items, archive, runner=subprocess.run, dry_run=False,
             summary['unsupported'] += 1
             summary['errors'].append('Shortcut requires review: ' + item['id'])
             continue
-        # The regular copy may already have saved precisely this content.
         if any(file_matches(item, path) for path in local_candidates(item, by_id, archive)):
             summary['already_archived'] += 1
             continue
-        destination = recovery_dir(item, by_id, recovered)
-        if recovered in destination.parents and (destination.is_symlink() or
-                any(p.is_symlink() for p in destination.parents if p != archive)):
-            summary['errors'].append('Unsafe symlink at ' + str(destination))
+
+        destination = compact_destination(item, by_id, duplicate_folders, recovered)
+        sidecar = destination.with_name(destination.name + '.source.json')
+        legacy = legacy_recovery_dir(item, by_id, recovered)
+        legacy_manifest = legacy / 'recovered.json'
+
+        if not safety_check(destination, archive) or not safety_check(legacy, archive):
+            summary['errors'].append('Unsafe recovery destination for ' + item['id'])
             continue
-        manifest = destination / 'recovered.json'
-        if manifest.is_file():
+
+        # Recognize the legacy single-file directory from the previously successful
+        # live probe. Never move/delete that copy without a separate migration.
+        if legacy_manifest.exists() or legacy.exists():
             try:
-                record = json.loads(manifest.read_text())
-                leaf = destination / record['filename']
-                if record['id'] == item['id'] and leaf.is_file() and not leaf.is_symlink():
-                    if item.get('md5Checksum') and not file_matches(item, leaf):
-                        summary['errors'].append('Existing recovered file changed: ' + str(leaf))
-                    elif md5_file(leaf) == record['local_md5']:
-                        summary['already_recovered'] += 1
-                    else:
-                        summary['errors'].append('Local checksum changed: ' + str(leaf))
-                    continue
-            except (KeyError, ValueError, OSError) as exc:
-                summary['errors'].append('Bad manifest: ' + str(manifest) + ': ' + str(exc))
-                continue
-            summary['errors'].append('Incomplete recovery manifest: ' + str(manifest))
+                if not legacy_manifest.is_file() or legacy_manifest.is_symlink():
+                    raise ValueError('Legacy directory has no valid manifest')
+                old_record = json.loads(legacy_manifest.read_text())
+                leaf_name = old_record['filename']
+                if Path(leaf_name).name != leaf_name or leaf_name in ('', '.', '..'):
+                    raise ValueError('Legacy manifest filename is unsafe')
+                legacy_file = legacy / leaf_name
+                verified_manifest(item, legacy_file, legacy_manifest)
+                summary['already_recovered'] += 1
+            except (OSError, ValueError, KeyError) as error:
+                summary['errors'].append('Unverified old recovery ' + item['id'] + ': ' + str(error))
             continue
-        if destination.exists() and any(destination.iterdir()):
-            summary['errors'].append('Unverified recovery directory; refusing overwrite: ' + str(destination))
+
+        if sidecar.exists() or sidecar.is_symlink() or destination.exists() or destination.is_symlink():
+            try:
+                verified_manifest(item, destination, sidecar)
+                summary['already_recovered'] += 1
+            except (OSError, ValueError, KeyError) as error:
+                summary['errors'].append('Unverified recovery ' + item['id'] + ': ' + str(error))
             continue
+
         if dry_run:
             summary['would_download'] += 1
             if verbose or summary['would_download'] <= sample_limit:
                 print('WOULD RECOVER:', item['id'], item['name'], '=>', destination)
             continue
+
         if summary['attempted'] >= max_downloads:
             break
         summary['attempted'] += 1
-        destination.mkdir(parents=True, exist_ok=True)
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            summary['errors'].append('Cannot create destination: ' + str(error))
+            continue
+        # copyid is given an explicit leaf name. --immutable prevents overwrites.
         command = ['rclone', 'backend', 'copyid', 'gdrive:', item['id'],
-                   str(destination) + '/', '--immutable', '--bwlimit=' + bandwidth,
+                   str(destination), '--immutable', '--bwlimit=' + bandwidth,
                    '--transfers=1', '--multi-thread-streams=1', '--retries=10',
                    '--low-level-retries=20', '--log-level=ERROR']
         proc = runner(command, text=True, capture_output=True)
         if proc.returncode:
             summary['errors'].append('Copy failed for ' + item['id'] + ': ' + proc.stderr[-700:])
             continue
-        leaves = [p for p in destination.iterdir() if p.is_file() and not p.is_symlink() and p.name != 'recovered.json']
-        if len(leaves) != 1:
-            summary['errors'].append('Unexpected output for ' + item['id'] + ': ' + str(destination))
+        if not destination.is_file() or destination.is_symlink():
+            summary['errors'].append('Expected output not produced: ' + str(destination))
             continue
-        leaf = leaves[0]
-        if item.get('md5Checksum') and not file_matches(item, leaf):
-            summary['errors'].append('Checksum mismatch for ' + item['id'] + ': ' + str(leaf))
+        if item.get('md5Checksum') and not file_matches(item, destination):
+            summary['errors'].append('Checksum mismatch for ' + item['id'] + ': ' + str(destination))
             continue
+
         record = {'id': item['id'], 'source_name': item['name'],
-                  'source_mime': item.get('mimeType'), 'source_md5': item.get('md5Checksum'),
-                  'filename': leaf.name, 'local_md5': md5_file(leaf)}
-        tmp = destination / 'recovered.json.tmp'
-        tmp.write_text(json.dumps(record, indent=2, ensure_ascii=False) + '\n')
-        os.replace(tmp, manifest)
+                  'source_mime': item.get('mimeType'),
+                  'source_md5': item.get('md5Checksum'),
+                  'filename': destination.name, 'local_md5': md5_file(destination)}
+        temp = sidecar.with_name(sidecar.name + '.tmp')
+        # Exclusive creation: do not clobber any unverified sidecar/tmp file.
+        try:
+            with temp.open('x') as handle:
+                json.dump(record, handle, indent=2, ensure_ascii=False)
+                handle.write('\n')
+                handle.flush()
+                os.fsync(handle.fileno())
+            if sidecar.exists():
+                raise ValueError('Another manifest already exists: ' + str(sidecar))
+            os.replace(temp, sidecar)
+        except (OSError, ValueError) as error:
+            summary['errors'].append('Could not save provenance for ' + item['id'] + ': ' + str(error))
+            continue
+
         summary['downloaded'] += 1
-        print('RECOVERED:', item['id'], '=>', leaf)
+        print('RECOVERED:', item['id'], '=>', destination)
+
     if dry_run and not verbose and summary['would_download'] > sample_limit:
         print(f"... {summary['would_download'] - sample_limit} more candidates omitted; "
               'use --verbose for every file.')

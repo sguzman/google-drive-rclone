@@ -33,8 +33,8 @@ class RecoveryTests(unittest.TestCase):
             commands = []
             def runner(command, **kwargs):
                 commands.append(command)
-                target = Path(command[5]); target.mkdir(parents=True, exist_ok=True)
-                (target / 'resume.pdf').write_bytes({'1': a, '2': b, '3': c}[command[4]])
+                target = Path(command[5]); target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes({'1': a, '2': b, '3': c}[command[4]])
                 return FakeProcess()
             summary = rd.run_recovery(items, base, runner=runner)
             self.assertEqual(summary['already_archived'], 1)
@@ -54,9 +54,12 @@ class RecoveryTests(unittest.TestCase):
         _, _, candidates, folder_ids = rd.plan(items)
         self.assertEqual(folder_ids, {'f1', 'f2'})
         self.assertEqual({item['id'] for item in candidates}, {'first', 'second'})
-        paths = [rd.recovery_dir(item, {o['id']: o for o in items}, Path('/archive'))
+        paths = [rd.compact_destination(item, {o['id']: o for o in items},
+                                        folder_ids, Path('/archive'))
                  for item in candidates]
         self.assertNotEqual(*paths)
+        self.assertNotEqual(paths[0].parent, paths[1].parent)
+        self.assertEqual(paths[0].parent.parent, paths[1].parent.parent)
 
 
     def test_export_name_collision_with_regular_file(self):
@@ -76,19 +79,54 @@ class RecoveryTests(unittest.TestCase):
         items = [obj('a', 'img.jpg', 'root', b'abc'), obj('b', 'img.jpg', 'root', b'xyz')]
         with tempfile.TemporaryDirectory() as temp:
             archive = Path(temp)
-            destination = rd.recovery_dir(items[0], {i['id']: i for i in items}, archive / '.rclone-duplicates')
-            destination.mkdir(parents=True)
-            (destination / 'img.jpg').write_bytes(b'bad')
+            destination = rd.compact_destination(items[0],
+                {i['id']: i for i in items}, set(), archive / '.rclone-duplicates')
+            destination.parent.mkdir(parents=True)
+            destination.write_bytes(b'bad')
             def cant_copy(command, **_kwargs):
                 if command[4] == 'a':
                     self.fail('Should never overwrite unknown local state')
-                folder = Path(command[5])
-                folder.mkdir(parents=True, exist_ok=True)
-                (folder / 'img.jpg').write_bytes(b'xyz')
+                target = Path(command[5])
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b'xyz')
                 return FakeProcess()
             summary = rd.run_recovery(items, archive, runner=cant_copy)
             self.assertEqual(len(summary['errors']), 1)
-            self.assertEqual((destination / 'img.jpg').read_bytes(), b'bad')
+            self.assertEqual(destination.read_bytes(), b'bad')
+
+    def test_legacy_recovery_remains_intact_and_detected(self):
+        items = [obj('a', 'photo.jpg', 'root', b'aaa'),
+                 obj('b', 'photo.jpg', 'root', b'bbb')]
+        with tempfile.TemporaryDirectory() as temp:
+            archive = Path(temp)
+            directory = rd.legacy_recovery_dir(items[0],
+                {i['id']: i for i in items}, archive / '.rclone-duplicates')
+            directory.mkdir(parents=True)
+            (directory / 'photo.jpg').write_bytes(b'aaa')
+            (directory / 'recovered.json').write_text(__import__('json').dumps({
+                'id': 'a', 'filename': 'photo.jpg', 'local_md5':
+                    hashlib.md5(b'aaa').hexdigest()}))
+            def runner(command, **_kwargs):
+                if command[4] == 'a':
+                    self.fail('Legacy file should not be downloaded again')
+                destination = Path(command[5])
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(b'bbb')
+                return FakeProcess()
+            result = rd.run_recovery(items, archive, runner=runner)
+            self.assertEqual(result['already_recovered'], 1)
+            self.assertTrue((directory / 'photo.jpg').is_file())
+            self.assertTrue((directory / 'recovered.json').is_file())
+
+    def test_compact_layout_has_no_one_file_directory(self):
+        items = [obj('f', 'Photos', 'root', mime=rd.FOLDER),
+                 obj('a', 'nice.jpg', 'f', b'abc'),
+                 obj('b', 'nice.jpg', 'f', b'def')]
+        by_id = {i['id']: i for i in items}
+        target = rd.compact_destination(items[1], by_id, set(), Path('/archive'))
+        self.assertEqual(target.parent, Path('/archive/Photos'))
+        self.assertTrue(target.name.startswith('nice--'))
+        self.assertTrue(target.name.endswith('.jpg'))
 
     def test_safe_paths(self):
         for name in ('../x', '/etc/passwd', '..', 'bad\\name', '\x00foo'):
@@ -117,9 +155,9 @@ class RecoveryTests(unittest.TestCase):
             seen = []
             def fake(command, **kwargs):
                 seen.append(command[4])
-                directory = Path(command[5])
-                directory.mkdir(parents=True, exist_ok=True)
-                (directory / 'duplicate').write_bytes(command[4].encode())
+                destination = Path(command[5])
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(command[4].encode())
                 return FakeProcess()
             summary = rd.run_recovery(items, Path(temp), runner=fake)
             self.assertEqual(summary['downloaded'], 1)
@@ -152,9 +190,9 @@ class RecoveryTests(unittest.TestCase):
             seen = []
             def fake(command, **kwargs):
                 seen.append(command)
-                directory = Path(command[5])
-                directory.mkdir(parents=True, exist_ok=True)
-                (directory / 'collide').write_bytes(b'Y')
+                destination = Path(command[5])
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(b'Y')
                 return FakeProcess()
             summary = rd.run_recovery(items, Path(temp), runner=fake,
                                       only_ids={'two'}, bandwidth='64K')

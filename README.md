@@ -107,7 +107,7 @@ Google Drive permits different file objects (with distinct IDs and possibly dist
 
 The tool assumes rclone's default Google Docs export extensions (`docx,xlsx,pptx,svg`) when finding output-name collisions; custom export-format configurations are not yet supported. The new Python tool enumerates IDs with `rclone backend query` and plans recovery for file-name collisions and descendants of colliding folder IDs. It compares available **MD5 checksums**, not just names or sizes. When a source has no hash (for example, Google-native Docs), it never assumes two objects are byte-identical.
 
-The primary archive remains at `/drive/gdrive`. Recovered files go to `/drive/gdrive/.rclone-duplicates/` in **separate directories keyed by their immutable Drive file IDs**, with `recovered.json` checksums and provenance. The tool never renames, deletes, or uploads anything on Google Drive. It refuses to overwrite uncertain local state.
+The primary archive remains at `/drive/gdrive`. Recovered files go to `/drive/gdrive/.rclone-duplicates/` in a **compact, browsable hierarchy**. Only genuinely colliding folder names get a 16-character ID-derived suffix; individual files get a short ID-derived suffix **in their filenames** (no per-file directory). A neighboring `.source.json` manifest records the cloud ID and local checksum. The tool never renames, deletes, or uploads anything on Google Drive. It refuses to overwrite uncertain local state.
 
 ### Step 1: Inventory, without downloading
 
@@ -142,3 +142,14 @@ python3 scripts/recover_duplicates.py probe
 ```
 
 This queries the Drive inventory, chooses **one checksum-bearing binary at most 1 MiB** that appears not to be archived, and downloads it by immutable ID at **64 KiB/s**. It verifies the cloud-provided MD5, writes a local provenance manifest and leaves Google Drive untouched. The one-file probe can coexist with the regular 512 KiB/s download; it does not stop or restart that service. If no eligible small candidate exists, it fails without downloading anything. A completed `probe` is not evidence that all other candidates can be recovered; it only validates one end-to-end copy.
+
+### Layout migration and legacy compatibility
+
+Old probe recoveries that used `id-<hash>/filename` directories are **recognized without moving or deleting anything**. The single file already recovered remains valid where it is. New recoveries use paths resembling:
+
+```text
+/drive/gdrive/.rclone-duplicates/My MacBook Air/Pictures/Screenshots--a1b2c3d4e5f67890/example--0123456789abcdef.jpg
+/drive/gdrive/.rclone-duplicates/My MacBook Air/Pictures/Screenshots--a1b2c3d4e5f67890/example--0123456789abcdef.jpg.source.json
+```
+
+The suffixes are illustrative, not actual Drive IDs. A directory is suffixed only if its **name actually collides within its parent**. Existing recovered content is never silently renamed or removed. No migration is needed for safety.
