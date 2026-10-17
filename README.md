@@ -105,30 +105,30 @@ The timer and scripts are linked to your clone. If you move the repo, run the in
 
 Google Drive permits different file objects (with distinct IDs and possibly distinct bytes) to share the same name in a folder. An ordinary rclone copy may ignore all but one of those objects. Duplicate folder names can also conceal files inside the folders.
 
-The tool assumes rclone's default Google Docs export extensions (`docx,xlsx,pptx,svg`) when finding output-name collisions; custom export-format configurations are not yet supported. The new Python tool enumerates IDs with \`rclone backend query\` and plans recovery for file-name collisions and descendants of colliding folder IDs. It compares available **MD5 checksums**, not just names or sizes. When a source has no hash (for example, Google-native Docs), it never assumes two objects are byte-identical.
+The tool assumes rclone's default Google Docs export extensions (`docx,xlsx,pptx,svg`) when finding output-name collisions; custom export-format configurations are not yet supported. The new Python tool enumerates IDs with `rclone backend query` and plans recovery for file-name collisions and descendants of colliding folder IDs. It compares available **MD5 checksums**, not just names or sizes. When a source has no hash (for example, Google-native Docs), it never assumes two objects are byte-identical.
 
-The primary archive remains at \`/drive/gdrive\`. Recovered files go to \`/drive/gdrive/.rclone-duplicates/\` in **separate directories keyed by their immutable Drive file IDs**, with \`recovered.json\` checksums and provenance. The tool never renames, deletes, or uploads anything on Google Drive. It refuses to overwrite uncertain local state.
+The primary archive remains at `/drive/gdrive`. Recovered files go to `/drive/gdrive/.rclone-duplicates/` in **separate directories keyed by their immutable Drive file IDs**, with `recovered.json` checksums and provenance. The tool never renames, deletes, or uploads anything on Google Drive. It refuses to overwrite uncertain local state.
 
 ### Step 1: Inventory, without downloading
 
-\`\`\`fish
+```fish
 python3 scripts/recover_duplicates.py scan
-\`\`\`
+```
 
-The scan prints \`WOULD RECOVER\` lines and a JSON summary. It makes no local modifications. It can take time because it queries the Google Drive file inventory.
+The scan prints a maximum of eight `WOULD RECOVER` samples by default, then a JSON summary. Add `--verbose` to print every candidate. **The candidate count includes descendants of duplicate-named folders; it is NOT a count of missing files.** It makes no local modifications. It can take time because it queries the Google Drive file inventory.
 
 ### Step 2: Explicitly recover
 
-\`\`\`fish
-python3 scripts/recover_duplicates.py recover
-\`\`\`
+```fish
+python3 scripts/recover_duplicates.py recover --max-downloads 1
+```
 
-Recovery uses \`rclone backend copyid\` and shares the 512 KiB/s cap; it also checks that \`/drive\` is actually an ext4 mount. **Do not run recover concurrently with the regular downloader.** Wait for the original copy to finish or pause that service first. This recovery step has not yet been live-validated against your Drive; automatic scheduling will be added after the read-only scan and one live copy are verified.
+Recovery uses `rclone backend copyid` and shares the 512 KiB/s cap; it also checks that `/drive` is actually an ext4 mount. **Recovery defaults to at most one new file per run and refuses to start while the regular downloader is active.** Wait for the original copy to finish or pause that service first. This recovery step has not yet been live-validated against your Drive; automatic scheduling will be added after the read-only scan and one live copy are verified.
 
 The recovery state is stored on the 18 TB drive, **never in this public repository**. Google-native Docs are converted through rclone's normal export settings; their bytes cannot be compared to a cloud MD5 hash. Dangling shortcuts are flagged for review and are not silently marked as archived. If a transfer is interrupted leaving uncertain local output, recovery stops for that ID rather than deleting or overwriting data.
 
 Offline tests (do not require Google credentials):
 
-\`\`\`fish
+```fish
 python3 -m unittest discover -s tests -v
-\`\`\`
+```

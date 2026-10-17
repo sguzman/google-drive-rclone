@@ -98,6 +98,34 @@ class RecoveryTests(unittest.TestCase):
             self.assertNotIn('\x00', piece)
             self.assertNotIn(piece, ('.', '..'))
 
+
+    def test_scan_short_output_and_accurate_count(self):
+        import io
+        from contextlib import redirect_stdout
+        items = [obj(str(i), 'duplicate', 'root', str(i).encode()) for i in range(24)]
+        with tempfile.TemporaryDirectory() as temp:
+            stream = io.StringIO()
+            with redirect_stdout(stream):
+                summary = rd.run_recovery(items, Path(temp), dry_run=True)
+            self.assertEqual(summary['candidate_files'], 24)
+            self.assertEqual(summary['would_download'], 24)
+            self.assertEqual(stream.getvalue().count('WOULD RECOVER:'), 8)
+
+    def test_recover_only_one_by_default(self):
+        items = [obj(str(i), 'duplicate', 'root', str(i).encode()) for i in range(3)]
+        with tempfile.TemporaryDirectory() as temp:
+            seen = []
+            def fake(command, **kwargs):
+                seen.append(command[4])
+                directory = Path(command[5])
+                directory.mkdir(parents=True, exist_ok=True)
+                (directory / 'duplicate').write_bytes(command[4].encode())
+                return FakeProcess()
+            summary = rd.run_recovery(items, Path(temp), runner=fake)
+            self.assertEqual(summary['downloaded'], 1)
+            self.assertEqual(summary['attempted'], 1)
+            self.assertEqual(len(seen), 1)
+
     def test_scan_has_no_side_effects(self):
         items = [obj('a', 'x', 'root', b'a'), obj('b', 'x', 'root', b'b')]
         with tempfile.TemporaryDirectory() as temp:

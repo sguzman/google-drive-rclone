@@ -172,11 +172,15 @@ def unique_candidates(candidates):
             yield item, None
 
 
-def run_recovery(items, archive, runner=subprocess.run, dry_run=False):
+def run_recovery(items, archive, runner=subprocess.run, dry_run=False,
+                 max_downloads=1, sample_limit=8, verbose=False):
     by_id, siblings, candidates, duplicate_folders = plan(items)
     recovered = archive / '.rclone-duplicates'
+    folder_names = sorted({by_id[oid]['name'] for oid in duplicate_folders})
     summary = {'duplicate_folder_ids': len(duplicate_folders),
-               'candidate_files': len(candidates), 'downloaded': 0,
+               'duplicate_folder_names': folder_names,
+               'candidate_files': len(candidates),
+               'would_download': 0, 'downloaded': 0, 'attempted': 0,
                'already_archived': 0, 'already_recovered': 0,
                'identical_source': 0, 'unsupported': 0, 'errors': []}
     for item, reason in unique_candidates(candidates):
@@ -218,8 +222,13 @@ def run_recovery(items, archive, runner=subprocess.run, dry_run=False):
             summary['errors'].append('Unverified recovery directory; refusing overwrite: ' + str(destination))
             continue
         if dry_run:
-            print('WOULD RECOVER:', item['id'], item['name'], '=>', destination)
+            summary['would_download'] += 1
+            if verbose or summary['would_download'] <= sample_limit:
+                print('WOULD RECOVER:', item['id'], item['name'], '=>', destination)
             continue
+        if summary['attempted'] >= max_downloads:
+            break
+        summary['attempted'] += 1
         destination.mkdir(parents=True, exist_ok=True)
         command = ['rclone', 'backend', 'copyid', 'gdrive:', item['id'],
                    str(destination) + '/', '--immutable', '--bwlimit=512K',
@@ -245,6 +254,9 @@ def run_recovery(items, archive, runner=subprocess.run, dry_run=False):
         os.replace(tmp, manifest)
         summary['downloaded'] += 1
         print('RECOVERED:', item['id'], '=>', leaf)
+    if dry_run and not verbose and summary['would_download'] > sample_limit:
+        print(f"... {summary['would_download'] - sample_limit} more candidates omitted; "
+              'use --verbose for every file.')
     return summary
 
 
@@ -253,8 +265,18 @@ def main():
     parser.add_argument('action', choices=['scan', 'recover'], help='scan is read-only')
     parser.add_argument('--archive', type=Path, default=DEFAULT_ROOT)
     parser.add_argument('--fixture', type=Path, help='offline JSON fixture (for testing only)')
+    parser.add_argument('--verbose', action='store_true', help='show all scan candidates')
+    parser.add_argument('--max-downloads', type=int, default=1,
+                        help='max file-ID downloads per recovery run (default: 1)')
     args = parser.parse_args()
+    if args.max_downloads < 1:
+        parser.error('--max-downloads must be positive')
     if args.action == 'recover' and not args.fixture:
+        active = subprocess.run(
+            ['systemctl', '--user', 'is-active', '--quiet', 'google-drive-rclone.service'],
+            capture_output=True)
+        if active.returncode == 0:
+            fail('Regular Google Drive downloader still running; wait for it to finish')
         if not is_disk_mounted():
             fail('/drive is not an ext4 mount; refusing to write')
         if args.archive.resolve() != DEFAULT_ROOT or args.archive.is_symlink():
@@ -262,7 +284,8 @@ def main():
         if not args.archive.is_dir() or not os.access(args.archive, os.W_OK):
             fail('Archive is missing or not writable')
     items = json.loads(args.fixture.read_text()) if args.fixture else query()
-    summary = run_recovery(items, args.archive, dry_run=args.action == 'scan')
+    summary = run_recovery(items, args.archive, dry_run=args.action == 'scan',
+                           max_downloads=args.max_downloads, verbose=args.verbose)
     print('SUMMARY:', json.dumps(summary, ensure_ascii=False))
     return 1 if summary['errors'] else 0
 
