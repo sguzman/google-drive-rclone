@@ -126,6 +126,42 @@ class RecoveryTests(unittest.TestCase):
             self.assertEqual(summary['attempted'], 1)
             self.assertEqual(len(seen), 1)
 
+
+    def test_probe_selects_small_distinct_binary_and_bounds_size(self):
+        items = [
+            obj('folder1', 'Photos', 'root', mime=rd.FOLDER),
+            obj('folder2', 'Photos', 'root', mime=rd.FOLDER),
+            obj('large', 'large.bin', 'folder1', b'A' * 104),
+            obj('small', 'small.bin', 'folder2', b'B' * 5),
+            obj('tiny', 'tiny.bin', 'folder1', b'C' * 2),
+            obj('duplicate-name-a', 'dup.bin', 'root', b'XX'),
+            obj('duplicate-name-b', 'dup.bin', 'root', b'YY'),
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            local = Path(temp)
+            (local / 'Photos').mkdir()
+            (local / 'Photos' / 'tiny.bin').write_bytes(b'C' * 2)
+            choice = rd.probe_candidate(items, local, max_bytes=100)
+            self.assertEqual(choice['id'], 'duplicate-name-a')
+            self.assertIsNone(rd.probe_candidate(items, local, max_bytes=1))
+
+    def test_probe_only_id_and_bandwidth(self):
+        items = [obj('one', 'collide', 'root', b'X'),
+                 obj('two', 'collide', 'root', b'Y')]
+        with tempfile.TemporaryDirectory() as temp:
+            seen = []
+            def fake(command, **kwargs):
+                seen.append(command)
+                directory = Path(command[5])
+                directory.mkdir(parents=True, exist_ok=True)
+                (directory / 'collide').write_bytes(b'Y')
+                return FakeProcess()
+            summary = rd.run_recovery(items, Path(temp), runner=fake,
+                                      only_ids={'two'}, bandwidth='64K')
+            self.assertEqual(summary['downloaded'], 1)
+            self.assertEqual(seen[0][4], 'two')
+            self.assertIn('--bwlimit=64K', seen[0])
+
     def test_scan_has_no_side_effects(self):
         items = [obj('a', 'x', 'root', b'a'), obj('b', 'x', 'root', b'b')]
         with tempfile.TemporaryDirectory() as temp:

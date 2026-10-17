@@ -172,8 +172,32 @@ def unique_candidates(candidates):
             yield item, None
 
 
+def probe_candidate(items, archive, max_bytes=1024 * 1024):
+    """Choose the smallest not-yet-backed-up binary file with a cloud checksum."""
+    by_id, _, candidates, _ = plan(items)
+    options = []
+    for item, reason in unique_candidates(candidates):
+        if reason or not item.get('md5Checksum'):
+            continue
+        try:
+            size = int(item.get('size', ''))
+        except (ValueError, TypeError):
+            continue
+        if not 0 < size <= max_bytes:
+            continue
+        if any(file_matches(item, candidate)
+               for candidate in local_candidates(item, by_id, archive)):
+            continue
+        destination = recovery_dir(item, by_id, archive / '.rclone-duplicates')
+        if destination.exists():
+            continue
+        options.append((size, item['id'], item))
+    return min(options, default=(None, None, None))[-1]
+
+
 def run_recovery(items, archive, runner=subprocess.run, dry_run=False,
-                 max_downloads=1, sample_limit=8, verbose=False):
+                 max_downloads=1, sample_limit=8, verbose=False,
+                 only_ids=None, bandwidth='512K'):
     by_id, siblings, candidates, duplicate_folders = plan(items)
     recovered = archive / '.rclone-duplicates'
     folder_names = sorted({by_id[oid]['name'] for oid in duplicate_folders})
@@ -184,6 +208,8 @@ def run_recovery(items, archive, runner=subprocess.run, dry_run=False,
                'already_archived': 0, 'already_recovered': 0,
                'identical_source': 0, 'unsupported': 0, 'errors': []}
     for item, reason in unique_candidates(candidates):
+        if only_ids is not None and item['id'] not in only_ids:
+            continue
         if reason:
             summary['identical_source'] += 1
             continue
@@ -231,7 +257,7 @@ def run_recovery(items, archive, runner=subprocess.run, dry_run=False,
         summary['attempted'] += 1
         destination.mkdir(parents=True, exist_ok=True)
         command = ['rclone', 'backend', 'copyid', 'gdrive:', item['id'],
-                   str(destination) + '/', '--immutable', '--bwlimit=512K',
+                   str(destination) + '/', '--immutable', '--bwlimit=' + bandwidth,
                    '--transfers=1', '--multi-thread-streams=1', '--retries=10',
                    '--low-level-retries=20', '--log-level=ERROR']
         proc = runner(command, text=True, capture_output=True)
@@ -262,7 +288,8 @@ def run_recovery(items, archive, runner=subprocess.run, dry_run=False,
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['scan', 'recover'], help='scan is read-only')
+    parser.add_argument('action', choices=['scan', 'probe', 'recover'],
+                        help='scan is read-only; probe copies one small checksum-verifiable file')
     parser.add_argument('--archive', type=Path, default=DEFAULT_ROOT)
     parser.add_argument('--fixture', type=Path, help='offline JSON fixture (for testing only)')
     parser.add_argument('--verbose', action='store_true', help='show all scan candidates')
@@ -277,6 +304,7 @@ def main():
             capture_output=True)
         if active.returncode == 0:
             fail('Regular Google Drive downloader still running; wait for it to finish')
+    if args.action in ('recover', 'probe') and not args.fixture:
         if not is_disk_mounted():
             fail('/drive is not an ext4 mount; refusing to write')
         if args.archive.resolve() != DEFAULT_ROOT or args.archive.is_symlink():
@@ -284,8 +312,18 @@ def main():
         if not args.archive.is_dir() or not os.access(args.archive, os.W_OK):
             fail('Archive is missing or not writable')
     items = json.loads(args.fixture.read_text()) if args.fixture else query()
+    only_ids = None
+    bandwidth = '512K'
+    if args.action == 'probe':
+        item = probe_candidate(items, args.archive)
+        if item is None:
+            fail('No eligible binary collision at or below 1 MiB remains to test')
+        print('PROBE:', item['id'], item['name'], item.get('size'), 'bytes')
+        only_ids = {item['id']}
+        bandwidth = '64K'  # coexist quietly with the normal 512 KiB/s downloader
     summary = run_recovery(items, args.archive, dry_run=args.action == 'scan',
-                           max_downloads=args.max_downloads, verbose=args.verbose)
+                           max_downloads=1 if args.action == 'probe' else args.max_downloads,
+                           verbose=args.verbose, only_ids=only_ids, bandwidth=bandwidth)
     print('SUMMARY:', json.dumps(summary, ensure_ascii=False))
     return 1 if summary['errors'] else 0
 

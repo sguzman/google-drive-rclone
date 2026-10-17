@@ -132,3 +132,13 @@ Offline tests (do not require Google credentials):
 ```fish
 python3 -m unittest discover -s tests -v
 ```
+
+### Single-file live probe
+
+While the normal downloader continues, run:
+
+```fish
+python3 scripts/recover_duplicates.py probe
+```
+
+This queries the Drive inventory, chooses **one checksum-bearing binary at most 1 MiB** that appears not to be archived, and downloads it by immutable ID at **64 KiB/s**. It verifies the cloud-provided MD5, writes a local provenance manifest and leaves Google Drive untouched. The one-file probe can coexist with the regular 512 KiB/s download; it does not stop or restart that service. If no eligible small candidate exists, it fails without downloading anything. A completed `probe` is not evidence that all other candidates can be recovered; it only validates one end-to-end copy.
