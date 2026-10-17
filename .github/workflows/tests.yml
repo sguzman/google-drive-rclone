@@ -11,4 +11,6 @@ jobs:
         with:
           python-version: '3.12'
       - name: Unit tests
-        run: python3 -m unittest discover -s tests -v
+        run: |
+          bash -n scripts/copy.sh
+          python3 -m unittest discover -s tests -v

@@ -21,7 +21,8 @@ die() {
 command -v rclone >/dev/null || die "rclone is not installed"
 
 # Immutable archive: no uploads, no deletions, no overwriting local files.
-exec rclone copy 'gdrive:' '/drive/gdrive' \
+# The post-copy recovery pass runs only after a SUCCESSFUL normal transfer.
+rclone copy 'gdrive:' '/drive/gdrive' \
   --immutable \
   --bwlimit=512K \
   --transfers=1 \
@@ -34,3 +35,14 @@ exec rclone copy 'gdrive:' '/drive/gdrive' \
   --stats=15m \
   --stats-log-level=NOTICE \
   --log-level=NOTICE
+
+# Serialized, budgeted duplicate recovery. The main copy process is finished
+# before this starts; --after-main-copy bypasses only the in-service status
+# check, not the mount safety checks or the recovery file lock.
+# Source files without an MD5 are intentionally deferred for manual review.
+script_dir="$(cd "$(dirname "$(realpath "$0")")" && pwd -P)"
+python3 "$script_dir/recover_duplicates.py" recover \
+  --after-main-copy \
+  --binary-only \
+  --max-downloads 25 \
+  --max-total-bytes 134217728

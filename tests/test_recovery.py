@@ -200,6 +200,44 @@ class RecoveryTests(unittest.TestCase):
             self.assertEqual(seen[0][4], 'two')
             self.assertIn('--bwlimit=64K', seen[0])
 
+
+    def test_auto_pass_is_bounded_by_bytes_and_count(self):
+        items = [obj('a', 'same', 'root', b'A' * 4),
+                 obj('b', 'same', 'root', b'B' * 4),
+                 obj('c', 'same', 'root', b'C' * 4)]
+        with tempfile.TemporaryDirectory() as temp:
+            seen = []
+            def fake(cmd, **kwargs):
+                seen.append(cmd[4])
+                dest = Path(cmd[5])
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(cmd[4].upper().encode() * 4)
+                return FakeProcess()
+            result = rd.run_recovery(items, Path(temp), runner=fake,
+                                     max_downloads=25, max_total_bytes=8,
+                                     binary_only=True)
+            self.assertEqual(result['downloaded'], 2)
+            self.assertEqual(result['planned_bytes'], 8)
+            self.assertEqual(result['skipped_budget'], 1)
+            self.assertEqual(len(seen), 2)
+
+    def test_auto_skips_hashless_but_normal_mode_keeps_it(self):
+        native = obj('a', 'Title', 'root', mime='application/vnd.google-apps.document')
+        binary = obj('b', 'Title.docx', 'root', b'binary')
+        with tempfile.TemporaryDirectory() as temp:
+            paths = []
+            def fake(cmd, **kwargs):
+                paths.append(cmd[4])
+                dest = Path(cmd[5])
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(b'binary')
+                return FakeProcess()
+            result = rd.run_recovery([native, binary], Path(temp), runner=fake,
+                                     binary_only=True, max_downloads=1)
+            self.assertEqual(result['skipped_unverifiable'], 1)
+            self.assertEqual(result['downloaded'], 1)
+            self.assertEqual(paths, ['b'])
+
     def test_scan_has_no_side_effects(self):
         items = [obj('a', 'x', 'root', b'a'), obj('b', 'x', 'root', b'b')]
         with tempfile.TemporaryDirectory() as temp:

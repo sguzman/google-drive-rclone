@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Recover colliding Google Drive names by immutable Drive file ID (read-only)."""
 import argparse
+import fcntl
 from collections import defaultdict
 import hashlib
 import json
@@ -247,7 +248,8 @@ def probe_candidate(items, archive, max_bytes=1024 * 1024):
 
 def run_recovery(items, archive, runner=subprocess.run, dry_run=False,
                  max_downloads=1, sample_limit=8, verbose=False,
-                 only_ids=None, bandwidth='512K'):
+                 only_ids=None, bandwidth='512K',
+                 binary_only=False, max_total_bytes=0):
     by_id, _, candidates, duplicate_folders = plan(items)
     recovered = archive / '.rclone-duplicates'
     folder_names = sorted({by_id[oid]['name'] for oid in duplicate_folders})
@@ -256,7 +258,9 @@ def run_recovery(items, archive, runner=subprocess.run, dry_run=False,
                'candidate_files': len(candidates),
                'would_download': 0, 'downloaded': 0, 'attempted': 0,
                'already_archived': 0, 'already_recovered': 0,
-               'identical_source': 0, 'unsupported': 0, 'errors': []}
+               'identical_source': 0, 'unsupported': 0,
+               'skipped_unverifiable': 0, 'skipped_budget': 0,
+               'planned_bytes': 0, 'errors': []}
 
     for item, reason in unique_candidates(candidates):
         if only_ids is not None and item['id'] not in only_ids:
@@ -265,8 +269,14 @@ def run_recovery(items, archive, runner=subprocess.run, dry_run=False,
             summary['identical_source'] += 1
             continue
         if item.get('mimeType') == SHORTCUT:
+            if binary_only:
+                summary['skipped_unverifiable'] += 1
+                continue
             summary['unsupported'] += 1
             summary['errors'].append('Shortcut requires review: ' + item['id'])
+            continue
+        if binary_only and not item.get('md5Checksum'):
+            summary['skipped_unverifiable'] += 1
             continue
         if any(file_matches(item, path) for path in local_candidates(item, by_id, archive)):
             summary['already_archived'] += 1
@@ -314,6 +324,19 @@ def run_recovery(items, archive, runner=subprocess.run, dry_run=False,
 
         if summary['attempted'] >= max_downloads:
             break
+        if max_total_bytes:
+            try:
+                size = int(item['size'])
+            except (KeyError, TypeError, ValueError):
+                summary['skipped_unverifiable'] += 1
+                continue
+            if size < 0:
+                summary['skipped_unverifiable'] += 1
+                continue
+            if size > max_total_bytes - summary['planned_bytes']:
+                summary['skipped_budget'] += 1
+                continue
+            summary['planned_bytes'] += size
         summary['attempted'] += 1
         try:
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -373,10 +396,18 @@ def main():
     parser.add_argument('--verbose', action='store_true', help='show all scan candidates')
     parser.add_argument('--max-downloads', type=int, default=1,
                         help='max file-ID downloads per recovery run (default: 1)')
+    parser.add_argument('--binary-only', action='store_true',
+                        help='exclude Google-native Docs and sources without MD5')
+    parser.add_argument('--max-total-bytes', type=int, default=0,
+                        help='max source bytes per run (0 = unlimited)')
+    parser.add_argument('--after-main-copy', action='store_true',
+                        help='run sequentially inside systemd copy service, not concurrently')
     args = parser.parse_args()
-    if args.max_downloads < 1:
-        parser.error('--max-downloads must be positive')
-    if args.action == 'recover' and not args.fixture:
+    if args.max_downloads < 1 or args.max_total_bytes < 0:
+        parser.error('--max-downloads must be positive and --max-total-bytes nonnegative')
+    if args.after_main_copy and args.action != 'recover':
+        parser.error('--after-main-copy is valid only for recover')
+    if args.action == 'recover' and not args.fixture and not args.after_main_copy:
         active = subprocess.run(
             ['systemctl', '--user', 'is-active', '--quiet', 'google-drive-rclone.service'],
             capture_output=True)
@@ -389,6 +420,20 @@ def main():
             fail('Archive must be exactly /drive/gdrive and not a symlink')
         if not args.archive.is_dir() or not os.access(args.archive, os.W_OK):
             fail('Archive is missing or not writable')
+    # Serialize all writers, including a manual probe during the automatic pass.
+    # A scan remains entirely read-only and never creates a lockfile.
+    lock = None
+    if args.action in ('recover', 'probe') and not args.fixture:
+        lock_path = args.archive / '.rclone-duplicates'
+        if lock_path.is_symlink():
+            fail('Recovery directory is a symlink')
+        lock_path.mkdir(exist_ok=True)
+        lock = (lock_path / '.recovery.lock').open('a+')
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print('Recovery busy: another pass holds the lock; skipping.')
+            return 0
     items = json.loads(args.fixture.read_text()) if args.fixture else query()
     only_ids = None
     bandwidth = '512K'
@@ -401,7 +446,9 @@ def main():
         bandwidth = '64K'  # coexist quietly with the normal 512 KiB/s downloader
     summary = run_recovery(items, args.archive, dry_run=args.action == 'scan',
                            max_downloads=1 if args.action == 'probe' else args.max_downloads,
-                           verbose=args.verbose, only_ids=only_ids, bandwidth=bandwidth)
+                           verbose=args.verbose, only_ids=only_ids, bandwidth=bandwidth,
+                           binary_only=args.binary_only,
+                           max_total_bytes=args.max_total_bytes)
     print('SUMMARY:', json.dumps(summary, ensure_ascii=False))
     return 1 if summary['errors'] else 0
 

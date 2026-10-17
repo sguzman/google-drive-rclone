@@ -101,7 +101,7 @@ The installer does not delete local files or modify your Google Drive; `rclone c
 The timer and scripts are linked to your clone. If you move the repo, run the installer again from the new path.
 
 
-## Duplicate-file recovery (new; initially scan-only)
+## Duplicate-file recovery
 
 Google Drive permits different file objects (with distinct IDs and possibly distinct bytes) to share the same name in a folder. An ordinary rclone copy may ignore all but one of those objects. Duplicate folder names can also conceal files inside the folders.
 
@@ -123,7 +123,7 @@ The scan prints a maximum of eight `WOULD RECOVER` samples by default, then a JS
 python3 scripts/recover_duplicates.py recover --max-downloads 1
 ```
 
-Recovery uses `rclone backend copyid` and shares the 512 KiB/s cap; it also checks that `/drive` is actually an ext4 mount. **Recovery defaults to at most one new file per run and refuses to start while the regular downloader is active.** Wait for the original copy to finish or pause that service first. This recovery step has not yet been live-validated against your Drive; automatic scheduling will be added after the read-only scan and one live copy are verified.
+Recovery uses `rclone backend copyid` and shares the 512 KiB/s cap; it also checks that `/drive` is actually an ext4 mount. **Recovery defaults to at most one new file per run and refuses to start while the regular downloader is active.** Wait for the original copy to finish or pause that service first. The compact recovery layout has now been live-tested against Google Drive. See the unattended limits below.
 
 The recovery state is stored on the 18 TB drive, **never in this public repository**. Google-native Docs are converted through rclone's normal export settings; their bytes cannot be compared to a cloud MD5 hash. Dangling shortcuts are flagged for review and are not silently marked as archived. If a transfer is interrupted leaving uncertain local output, recovery stops for that ID rather than deleting or overwriting data.
 
@@ -153,3 +153,27 @@ Old probe recoveries that used `id-<hash>/filename` directories are **recognized
 ```
 
 The suffixes are illustrative, not actual Drive IDs. A directory is suffixed only if its **name actually collides within its parent**. Existing recovered content is never silently renamed or removed. No migration is needed for safety.
+
+### Unattended recovery
+
+The normal `google-drive-rclone.service` runs two stages **sequentially**:
+
+1. Ordinary immutable `rclone copy` at 512 KiB/s.
+2. **Only after that copy succeeds**, a collision-recovery pass using immutable file IDs, at most **25 files and 128 MiB of source data per run** (same 512 KiB/s rate cap).
+
+This is implemented in the version-controlled `scripts/copy.sh`; the existing service and timer remain in place. Updating your checkout is enough because the installed launcher is a symlink to the repository script.
+
+To protect your archive, the unattended recovery **only downloads sources with Google Drive MD5 hashes**; hashless Google Docs, shortcuts, and oversized files that cannot fit the per-pass budget are deferred. The summary counts these deferrals. Files larger than 128 MiB require a later separate/manual pass or a larger budget. It is not correct to claim the archive is complete just because the unattended pass eventually has nothing to download.
+
+Recovery uses an exclusive local `.recovery.lock` file in `/drive/gdrive/.rclone-duplicates`, preventing simultaneous recovery/probe downloads. The ordinary downloader is never stopped to perform recovery. Existing local files, earlier recovered files, and Google Drive itself are never deleted or renamed by the automatic pass.
+
+### Update and observe
+
+```fish
+cd ~/Code/Sync/google-drive-rclone; and git pull --ff-only
+journalctl --user -u google-drive-rclone.service -n 50 --no-pager
+```
+
+No new systemd unit or installer rerun is needed. If a full normal pass is currently active, its existing process runs to completion; the updated post-copy recovery applies from the **next pass**.
+
+The recovery scanner re-queries Drive on each pass to recognize newly added Takeout ZIPs and any newer collision state. Because the data is static, no changes to the source are expected.
