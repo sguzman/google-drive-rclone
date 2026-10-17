@@ -37,7 +37,7 @@ If the destination is not writable, the installer exits and prints a one-time ow
 | Concurrent transfers | 1 |
 | Checkers | 2 |
 | Multi-thread download streams | 1 |
-| First automatic run | ~1–2 minutes after user-manager startup / timer activation |
+| First automatic run | ~1–2 minutes after timer activation |
 | Later runs | ~1 hour after each run stops |
 | Updates of existing local files | Prohibited (`--immutable`) |
 | Deletes | None |

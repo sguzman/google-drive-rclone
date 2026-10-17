@@ -2,7 +2,7 @@
 Description=Run Google Drive archive periodically
 
 [Timer]
-OnStartupSec=1min
+OnActiveSec=1min
 OnUnitInactiveSec=1h
 AccuracySec=1min
 Unit=google-drive-rclone.service
