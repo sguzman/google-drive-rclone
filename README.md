@@ -177,3 +177,16 @@ journalctl --user -u google-drive-rclone.service -n 50 --no-pager
 No new systemd unit or installer rerun is needed. If a full normal pass is currently active, its existing process runs to completion; the updated post-copy recovery applies from the **next pass**.
 
 The recovery scanner re-queries Drive on each pass to recognize newly added Takeout ZIPs and any newer collision state. Because the data is static, no changes to the source are expected.
+
+### Broken Google Drive shortcuts
+
+The main rclone copy uses `--drive-skip-dangling-shortcuts`. Google Drive may retain shortcuts whose target was deleted or is inaccessible; without this option, rclone copies ordinary files successfully but returns an error at the end and prevents the subsequent duplicate-recovery stage. This flag excludes **only dangling shortcuts** from normal listings; working shortcuts still resolve as usual. No cloud data is modified.
+
+If an earlier run failed with `can't read dangling shortcut`, downloaded files are still present. After pulling the repository, start a new pass without blocking your terminal:
+
+```fish
+systemctl --user reset-failed google-drive-rclone.service
+systemctl --user start --no-block google-drive-rclone.service
+```
+
+The service will skip previously transferred files through normal rclone checks and then run bounded collision recovery after an otherwise successful copy. The existing timer remains enabled.

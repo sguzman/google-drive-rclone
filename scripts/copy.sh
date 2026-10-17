@@ -23,6 +23,7 @@ command -v rclone >/dev/null || die "rclone is not installed"
 # Immutable archive: no uploads, no deletions, no overwriting local files.
 # The post-copy recovery pass runs only after a SUCCESSFUL normal transfer.
 rclone copy 'gdrive:' '/drive/gdrive' \
+  --drive-skip-dangling-shortcuts \
   --immutable \
   --bwlimit=512K \
   --transfers=1 \

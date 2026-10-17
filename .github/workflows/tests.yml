@@ -13,4 +13,5 @@ jobs:
       - name: Unit tests
         run: |
           bash -n scripts/copy.sh
+          grep -Fq -- '--drive-skip-dangling-shortcuts' scripts/copy.sh
           python3 -m unittest discover -s tests -v
