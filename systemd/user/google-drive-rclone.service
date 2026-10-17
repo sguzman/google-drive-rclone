@@ -1,0 +1,12 @@
+[Unit]
+Description=Quiet one-way Google Drive local archive
+Documentation=https://github.com/sguzman/google-drive-rclone
+ConditionPathIsMountPoint=/drive
+ConditionPathIsReadWrite=/drive
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/google-drive-rclone-copy
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=infinity

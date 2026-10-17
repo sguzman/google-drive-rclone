@@ -1,0 +1,11 @@
+# Never commit local credentials, private configuration, or media.
+rclone.conf
+.env
+.env.*
+*.token
+*.log
+*.partial
+data/
+downloads/
+archives/
+__pycache__/
