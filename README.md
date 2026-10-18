@@ -159,11 +159,13 @@ The suffixes are illustrative, not actual Drive IDs. A directory is suffixed onl
 The normal `google-drive-rclone.service` runs two stages **sequentially**:
 
 1. Ordinary immutable `rclone copy` at 512 KiB/s.
-2. **Only after that copy succeeds**, a collision-recovery pass using immutable file IDs, at most **25 files and 128 MiB of source data per run** (same 512 KiB/s rate cap).
+2. **Only after that copy succeeds**, a collision-recovery pass using immutable file IDs, at most **5,000 files and a nominal 128 MiB of source data per run** (same 512 KiB/s rate cap).
 
 This is implemented in the version-controlled `scripts/copy.sh`; the existing service and timer remain in place. Updating your checkout is enough because the installed launcher is a symlink to the repository script.
 
-To protect your archive, the unattended recovery **only downloads sources with Google Drive MD5 hashes**; hashless Google Docs, shortcuts, and oversized files that cannot fit the per-pass budget are deferred. The summary counts these deferrals. Files larger than 128 MiB require a later separate/manual pass or a larger budget. It is not correct to claim the archive is complete just because the unattended pass eventually has nothing to download.
+Automatic recovery attempts checksum-bearing binary files and **exportable Google Docs/Sheets/Slides/Drawings** through read-only `rclone backend copyid`. Hashless Workspace exports are preserved with a local MD5 and provenance sidecar, but cannot be verified against a nonexistent Google Drive MD5. Shortcuts and non-exportable Google-native formats remain counted as unsupported, never falsely marked complete.
+
+The unattended stage allows up to **5,000 files and 128 MiB per pass**, using larger eligible files first so that the bandwidth budget is utilized. **Exception:** once smaller eligible files have been recovered, a single file larger than 128 MiB can occupy a full run and exceed the byte budget because an rclone file transfer is indivisible; the 512 KiB/s speed cap and single-transfer constraint still apply. Such a file can take hours on a slow connection and interrupted rclone transfers may restart from the beginning. This exception is logged as `OVERSIZE`. The summary reports pending counts and known outstanding bytes after each run. A successful run does **not** itself certify Drive completeness; unsupported, inaccessible or unindexed objects must still be resolved.
 
 Recovery uses an exclusive local `.recovery.lock` file in `/drive/gdrive/.rclone-duplicates`, preventing simultaneous recovery/probe downloads. The ordinary downloader is never stopped to perform recovery. Existing local files, earlier recovered files, and Google Drive itself are never deleted or renamed by the automatic pass.
 

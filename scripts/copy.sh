@@ -40,10 +40,9 @@ rclone copy 'gdrive:' '/drive/gdrive' \
 # Serialized, budgeted duplicate recovery. The main copy process is finished
 # before this starts; --after-main-copy bypasses only the in-service status
 # check, not the mount safety checks or the recovery file lock.
-# Source files without an MD5 are intentionally deferred for manual review.
+# Google Workspace docs are exported by rclone and tracked by local checksum.
 script_dir="$(cd "$(dirname "$(realpath "$0")")" && pwd -P)"
 python3 "$script_dir/recover_duplicates.py" recover \
   --after-main-copy \
-  --binary-only \
-  --max-downloads 25 \
+  --max-downloads 5000 \
   --max-total-bytes 134217728

@@ -246,5 +246,76 @@ class RecoveryTests(unittest.TestCase):
             self.assertFalse((Path(temp) / '.rclone-duplicates').exists())
 
 
+
+    def test_unattended_uses_byte_budget_not_25_file_limit(self):
+        # 80 small cloud collisions should all fit into one 128-byte pass
+        # when the file-count cap is raised: no pointless tiny-file batches.
+        items = [obj(str(i), 'same.jpg', 'root', bytes([i])) for i in range(80)]
+        with tempfile.TemporaryDirectory() as tmp:
+            def fake(cmd, **kwargs):
+                Path(cmd[5]).write_bytes(bytes([int(cmd[4])]))
+                return FakeProcess()
+            result = rd.run_recovery(items, Path(tmp), runner=fake,
+                                     max_downloads=5000, max_total_bytes=128)
+            self.assertEqual(result['downloaded'], 80)
+            self.assertEqual(result['downloaded_bytes'], 80)
+            self.assertEqual(result['pending_files'], 0)
+            self.assertEqual(result['errors'], [])
+
+    def test_budget_packs_larger_files_before_tiny_ones(self):
+        items = [obj('a', 'same', 'root', b'a'),
+                 obj('b', 'same', 'root', b'b' * 7),
+                 obj('c', 'same', 'root', b'c' * 2)]
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = {'a': b'a', 'b': b'b'*7, 'c': b'c'*2}
+            seen = []
+            def fake(cmd, **kwargs):
+                seen.append(cmd[4])
+                Path(cmd[5]).write_bytes(payload[cmd[4]])
+                return FakeProcess()
+            result = rd.run_recovery(items, Path(tmp), runner=fake,
+                                     max_downloads=50, max_total_bytes=8)
+            self.assertEqual(seen, ['b', 'a'])
+            self.assertEqual(result['pending_files'], 1)
+            self.assertEqual(result['pending_bytes_known'], 2)
+            self.assertEqual(result['planned_bytes'], 8)
+
+    def test_oversize_file_eventually_downloads_without_unlimited_rate(self):
+        items = [obj('big', 'same', 'root', b'B' * 20),
+                 obj('other', 'same', 'root', b'X' * 5)]
+        with tempfile.TemporaryDirectory() as tmp:
+            seen = []
+            payload = {'big': b'B'*20, 'other': b'X'*5}
+            def fake(cmd, **kwargs):
+                seen.append(cmd)
+                Path(cmd[5]).write_bytes(payload[cmd[4]])
+                return FakeProcess()
+            first = rd.run_recovery(items, Path(tmp), runner=fake,
+                                    max_downloads=50, max_total_bytes=8)
+            self.assertEqual(first['downloaded'], 1)
+            self.assertEqual(first['pending_files'], 1)
+            second = rd.run_recovery(items, Path(tmp), runner=fake,
+                                     max_downloads=50, max_total_bytes=8)
+            self.assertEqual(second['downloaded'], 1)
+            self.assertEqual(second['downloaded_bytes'], 20)
+            self.assertEqual(second['pending_files'], 0)
+            self.assertIn('--bwlimit=512K', seen[-1])
+
+    def test_unattended_exports_hashless_native_docs_without_cloud_md5(self):
+        native = obj('doc', 'My Notes', 'root', mime='application/vnd.google-apps.document')
+        binary = obj('bin', 'My Notes.docx', 'root', b'xyz')
+        with tempfile.TemporaryDirectory() as tmp:
+            def fake(cmd, **kwargs):
+                Path(cmd[5]).write_bytes(b'exported' if cmd[4] == 'doc' else b'xyz')
+                return FakeProcess()
+            result = rd.run_recovery([native, binary], Path(tmp), runner=fake,
+                                     max_downloads=50, max_total_bytes=128)
+            self.assertEqual(result['downloaded'], 2)
+            self.assertEqual(result['downloaded_bytes'], 11)
+            self.assertEqual(result['pending_files'], 0)
+            self.assertEqual(result['skipped_unverifiable'], 0)
+            self.assertTrue(any(p.name.endswith('.source.json')
+                                for p in (Path(tmp)/'.rclone-duplicates').rglob('*')))
+
 if __name__ == '__main__':
     unittest.main()

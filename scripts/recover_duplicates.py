@@ -260,20 +260,48 @@ def run_recovery(items, archive, runner=subprocess.run, dry_run=False,
                'already_archived': 0, 'already_recovered': 0,
                'identical_source': 0, 'unsupported': 0,
                'skipped_unverifiable': 0, 'skipped_budget': 0,
-               'planned_bytes': 0, 'errors': []}
+               'planned_bytes': 0, 'downloaded_bytes': 0,
+               'pending_files': 0, 'pending_bytes_known': 0,
+               'pending_unknown_size': 0, 'oversize_files': 0,
+               'errors': []}
 
-    for item, reason in unique_candidates(candidates):
+    def source_bytes(obj):
+        try:
+            value = int(obj['size'])
+            return value if value >= 0 else None
+        except (KeyError, ValueError, TypeError):
+            return None
+
+    entries = list(unique_candidates(candidates))
+    # Recover the largest eligible files first so a 128-MiB pass actually
+    # transfers bytes, instead of spending it on 25 tiny alphabetic files.
+    # Oversize files follow eligible files; once nothing smaller remains,
+    # download one indivisible large file (still at 512 KiB/s) rather than
+    # silently excluding it forever. Unmeasured Google Docs are last.
+    if max_total_bytes and not dry_run:
+        def priority(entry):
+            item, _ = entry
+            size = source_bytes(item)
+            if size is None:
+                return (2, 0, item['id'])
+            return (1 if size > max_total_bytes else 0, -size, item['id'])
+        entries.sort(key=priority)
+
+    for item, reason in entries:
         if only_ids is not None and item['id'] not in only_ids:
             continue
         if reason:
             summary['identical_source'] += 1
             continue
         if item.get('mimeType') == SHORTCUT:
-            if binary_only:
-                summary['skipped_unverifiable'] += 1
-                continue
+            # Shortcuts are references, not a downloadable source payload.
             summary['unsupported'] += 1
-            summary['errors'].append('Shortcut requires review: ' + item['id'])
+            continue
+        if item.get('mimeType', '').startswith('application/vnd.google-apps.') and (
+                item.get('mimeType') not in GOOGLE_EXPORT_EXTENSIONS):
+            # Unsupported Google-native items (e.g. Forms) need separate
+            # export handling. Never claim to have backed them up.
+            summary['unsupported'] += 1
             continue
         if binary_only and not item.get('md5Checksum'):
             summary['skipped_unverifiable'] += 1
@@ -316,27 +344,38 @@ def run_recovery(items, archive, runner=subprocess.run, dry_run=False,
                 summary['errors'].append('Unverified recovery ' + item['id'] + ': ' + str(error))
             continue
 
+        size = source_bytes(item)
+        summary['pending_files'] += 1
+        if size is None:
+            summary['pending_unknown_size'] += 1
+        else:
+            summary['pending_bytes_known'] += size
+            if max_total_bytes and size > max_total_bytes:
+                summary['oversize_files'] += 1
+
         if dry_run:
             summary['would_download'] += 1
             if verbose or summary['would_download'] <= sample_limit:
                 print('WOULD RECOVER:', item['id'], item['name'], '=>', destination)
             continue
 
+        # Keep scanning for an accurate backlog count after the transfer cap.
         if summary['attempted'] >= max_downloads:
-            break
+            continue
         if max_total_bytes:
-            try:
-                size = int(item['size'])
-            except (KeyError, TypeError, ValueError):
-                summary['skipped_unverifiable'] += 1
-                continue
-            if size < 0:
-                summary['skipped_unverifiable'] += 1
-                continue
-            if size > max_total_bytes - summary['planned_bytes']:
+            if summary['planned_bytes'] >= max_total_bytes:
                 summary['skipped_budget'] += 1
                 continue
-            summary['planned_bytes'] += size
+            # A single oversized source may run beyond the nominal per-pass
+            # byte budget, but only when no smaller transfer was attempted.
+            # Skipping it forever would make the archive permanently partial.
+            if size is not None and size > max_total_bytes - summary['planned_bytes']:
+                if summary['attempted'] > 0 or summary['planned_bytes'] > 0:
+                    summary['skipped_budget'] += 1
+                    continue
+                print('OVERSIZE: one indivisible file exceeds the per-run target:',
+                      item['id'], size, 'bytes')
+            summary['planned_bytes'] += size or 0
         summary['attempted'] += 1
         try:
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -379,6 +418,18 @@ def run_recovery(items, archive, runner=subprocess.run, dry_run=False,
             continue
 
         summary['downloaded'] += 1
+        actual_bytes = destination.stat().st_size
+        summary['downloaded_bytes'] += actual_bytes
+        summary['pending_files'] -= 1
+        if size is None:
+            summary['pending_unknown_size'] -= 1
+            # Workspace exports do not expose their eventual byte size via
+            # Google Drive metadata. Charge actual exported bytes to budget.
+            summary['planned_bytes'] += actual_bytes
+        else:
+            summary['pending_bytes_known'] -= size
+            if max_total_bytes and size > max_total_bytes:
+                summary['oversize_files'] -= 1
         print('RECOVERED:', item['id'], '=>', destination)
 
     if dry_run and not verbose and summary['would_download'] > sample_limit:
