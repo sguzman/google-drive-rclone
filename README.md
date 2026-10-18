@@ -192,15 +192,3 @@ systemctl --user start --no-block google-drive-rclone.service
 ```
 
 The service will skip previously transferred files through normal rclone checks and then run bounded collision recovery after an otherwise successful copy. The existing timer remains enabled.
-
-
-## OAuth publishing information pages
-
-The files under `docs/` provide a public, **static** home page and privacy policy for the personal desktop OAuth app. They contain no credentials, Drive metadata or private data.
-
-To publish with GitHub Pages: repository **Settings → Pages → Deploy from a branch → main → /docs → Save**. When deployed, confirm both of these pages actually load before using them in Google Cloud:
-
-- Home: `https://sguzman.github.io/google-drive-rclone/`
-- Privacy: `https://sguzman.github.io/google-drive-rclone/privacy.html`
-
-On Google Auth Platform → Branding, use the above URLs for *Application home page* and *Application privacy policy link*; under *Authorized domains*, use `sguzman.github.io` **if Google accepts or verifies it**. Do not use someone else's domain or placeholder website. Google can require domain ownership verification and the page configuration may take time to propagate. After saving Branding, return to Audience and check whether **Publish app** is enabled. Publishing is important for preventing seven-day testing-mode refresh-token expiration. Do not put your OAuth client secret into Pages or this repository.
