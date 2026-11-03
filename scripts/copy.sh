@@ -20,9 +20,21 @@ die() {
 
 command -v rclone >/dev/null || die "rclone is not installed"
 
+# Before skipping existing destination files, preserve EVERY detected
+# changed cloud revision separately. Fail closed on metadata/API/recovery errors
+# or when the bounded pass leaves any revision pending.
+script_dir="$(cd "$(dirname "$(realpath "$0")")" && pwd -P)"
+python3 "$script_dir/recover_versions.py" recover \
+  --in-service \
+  --require-complete \
+  --max-downloads 16 \
+  --max-total-bytes 134217728
+
 # Immutable archive: no uploads, no deletions, no overwriting local files.
-# The post-copy recovery pass runs only after a SUCCESSFUL normal transfer.
+# Existing originals are skipped ONLY after the version preflight succeeds.
+# --immutable is retained as defense in depth.
 rclone copy 'gdrive:' '/drive/gdrive' \
+  --ignore-existing \
   --drive-skip-dangling-shortcuts \
   --immutable \
   --bwlimit=512K \
@@ -41,7 +53,6 @@ rclone copy 'gdrive:' '/drive/gdrive' \
 # before this starts; --after-main-copy bypasses only the in-service status
 # check, not the mount safety checks or the recovery file lock.
 # Google Workspace docs are exported by rclone and tracked by local checksum.
-script_dir="$(cd "$(dirname "$(realpath "$0")")" && pwd -P)"
 python3 "$script_dir/recover_duplicates.py" recover \
   --after-main-copy \
   --max-downloads 5000 \
