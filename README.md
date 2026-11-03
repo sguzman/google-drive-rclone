@@ -203,13 +203,10 @@ conflicts, because they perform different comparisons. A timestamp mismatch
 is **not proof that an exported Google Workspace document's bytes changed**;
 the scanner now reports counts by checksum availability.
 
-After unit tests and a fresh scan, validate a single small checksum-backed
-cloud revision without touching the original:
-
-```fish
-python3 scripts/recover_versions.py scan --only-hashed
-python3 scripts/recover_versions.py recover --only-hashed --max-downloads 1 --max-total-bytes 8388608
-```
+After unit tests, validate a single small checksum-backed
+cloud revision without touching the original. Use the opt-in
+snapshot/reuse pair documented below to avoid repeating a full remote
+query immediately after a successful scan.
 
 The recovery uses a single `rclone backend copyid` at 512 KiB/s, verifies
 the cloud MD5, and stores new data only in `/drive/gdrive/.rclone-versions/`
@@ -230,6 +227,38 @@ version-preserving stage into the normal copy sequence. Only then can
 the main copy skip existing local files without silently losing new
 cloud versions. No names or contents of personal conflict files belong
 in this public repository.
+
+## Avoid repeated Google Drive inventories while validating versions
+
+The shared rclone OAuth client is being retired during 2026, and Google
+may reject even a valid read-only `rclone backend query` with HTTP 403
+`rateLimitExceeded` when the shared project's minute quota is exhausted.
+Repeated immediate retries are not a fix. **Create your own Google Drive
+OAuth client** following https://rclone.org/drive/#making-your-own-client-id
+and configure it locally in rclone; never commit a client secret, token,
+or `rclone.conf` to this repository.
+
+The version scanner and recovery can reuse **one** completed inventory.
+The normal scan remains completely read-only. The opt-in snapshot mode
+stores a locally private (0600), atomically written JSON metadata
+inventory under `/drive/gdrive/.rclone-versions/.version-inventory.json`;
+it includes private cloud filenames and IDs, is never stored in Git,
+and expires after 30 minutes. The recovery refuses an expired, corrupted,
+or world-readable snapshot. This avoids a second *full enumeration*, not
+the API request needed to download an individual file.
+
+Use the following two commands after configuring a stable OAuth client:
+
+```fish
+python3 scripts/recover_versions.py scan --only-hashed --save-snapshot
+python3 scripts/recover_versions.py recover --only-hashed --use-snapshot --max-downloads 1 --max-total-bytes 8388608
+```
+
+The recovery still writes only separate versioned files; the original
+archive is immutable. The one-file 8 MiB limit is an attempted-transfer
+limit, not an obligation to download anything. If no eligible source
+is found, `attempted` remains zero. This workflow is opt-in; the
+production copy service is not changed by it.
 
 ## Broken Google Drive shortcuts
 
