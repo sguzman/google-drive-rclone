@@ -180,7 +180,39 @@ No new systemd unit or installer rerun is needed. If a full normal pass is curre
 
 The recovery scanner re-queries Drive on each pass to recognize newly added Takeout ZIPs and any newer collision state. Because the data is static, no changes to the source are expected.
 
-### Broken Google Drive shortcuts
+### Changed-file conflicts (staged; not yet enabled)
+
+The main archive uses `--immutable`, so if a cloud file changes after
+its local counterpart was saved, the ordinary copy reports an error
+rather than overwriting historical bytes. **Do not delete the existing
+copy or disable immutability to silence this error.**
+
+A separate version-preservation tool is staged at
+`scripts/recover_versions.py`. First validate it **read-only**:
+
+```fish
+python3 -m unittest discover -s tests -v
+python3 scripts/recover_versions.py scan
+```
+
+The scan compares checksum-bearing binary files and modified timestamps
+for hashless Google Workspace exports, and reports changed, previously
+archived sources. It does not download anything. The optional recovery
+command uses immutable Drive file IDs and stores cloud revisions in
+`/drive/gdrive/.rclone-versions/` with a source-provenance sidecar. It
+never replaces the original `/drive/gdrive` file. For hashless Workspace
+exports, modification-time comparison is a heuristic rather than proof
+that exported bytes differ. Rclone name sanitization and unsupported
+source metadata can also require manual review.
+
+**The copy service is intentionally unchanged at this stage.** After
+the scanner and unit tests have passed on the real archive, wire the
+version-preserving stage into the normal copy sequence. Only then can
+the main copy skip existing local files without silently losing new
+cloud versions. No names or contents of personal conflict files belong
+in this public repository.
+
+## Broken Google Drive shortcuts
 
 The main rclone copy uses `--drive-skip-dangling-shortcuts`. Google Drive may retain shortcuts whose target was deleted or is inaccessible; without this option, rclone copies ordinary files successfully but returns an error at the end and prevents the subsequent duplicate-recovery stage. This flag excludes **only dangling shortcuts** from normal listings; working shortcuts still resolve as usual. No cloud data is modified.
 
