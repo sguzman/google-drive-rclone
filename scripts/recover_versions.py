@@ -171,7 +171,7 @@ def recover(items, archive, *, runner=subprocess.run, dry_run=True,
             sidecar = destination.with_name(destination.name + '.source.json')
             with sidecar.open('x', encoding='utf-8') as handle:
                 json.dump(record, handle, ensure_ascii=False, sort_keys=True)
-                handle.write('\\n')
+                handle.write('\n')
                 handle.flush()
                 os.fsync(handle.fileno())
             summary['downloaded'] += 1
