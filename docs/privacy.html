@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Privacy policy — Personal Drive Archive</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; line-height: 1.65; }
+    body { margin: 0; background: #f7f8f7; color: #1c2521; }
+    body[data-theme="dark"] { color-scheme: dark; background: #141a18; color: #e9eee9; }
+    body[data-theme="light"] { color-scheme: light; background: #f7f8f7; color: #1c2521; }
+    @media (prefers-color-scheme: dark) {
+      body:not([data-theme]) { background: #141a18; color: #e9eee9; }
+    }
+    a { color: #297652; }
+    body[data-theme="dark"] a { color: #86cfa8; }
+    @media (prefers-color-scheme: dark) { body:not([data-theme]) a { color: #86cfa8; } }
+    main { max-width: 720px; padding: 24px; margin: 32px auto 64px; }
+    header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+    nav { display: flex; gap: 16px; }
+    nav a { font-weight: 600; }
+    label { font-size: .875rem; }
+    select { font: inherit; margin-left: 6px; padding: 6px; border-radius: 7px; }
+    h1 { font-size: clamp(2rem, 5vw, 2.7rem); line-height: 1.2; margin-top: 48px; }
+    h2 { font-size: 1.25rem; margin-top: 36px; }
+    p, li { max-width: 65ch; }
+    footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid #8885; font-size: .9rem; }
+    code { font-size: .9em; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <nav aria-label="Main navigation">
+      <a href="./">Home</a>
+      <a href="privacy.html">Privacy policy</a>
+      <a href="https://github.com/sguzman/google-drive-rclone">Source code</a>
+    </nav>
+    <label for="theme">Theme
+      <select id="theme" aria-label="Color theme">
+        <option value="system">System</option>
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+      </select>
+    </label>
+  </header>
+  <h1>Privacy policy</h1>
+<p>This policy applies to the personal-use Google Drive archive configuration described
+  on the <a href="./">homepage</a> and its Google OAuth desktop client.
+  It does not represent a hosted Google Drive backup service.</p>
+<h2>Google account information accessed</h2>
+<p>With the account owner's consent, the locally running rclone program uses
+  <code>https://www.googleapis.com/auth/drive.readonly</code> to read the
+  Google Drive file and folder list, file metadata, and file contents necessary
+  to create a personal local backup. The configuration is not intended to modify,
+  upload or delete cloud files.</p>
+<h2>How the data is used and stored</h2>
+<p>Google Drive data is downloaded directly by rclone from Google to storage
+  controlled by the account owner. OAuth credentials and refresh tokens
+  remain in the owner's local rclone configuration and are not uploaded to
+  this documentation website or public source repository.</p>
+<p>This configuration does not use Google Drive data for advertising, sale,
+  profiling, or distribution to other users. The publicly hosted pages
+  contain no Google Drive files, user tokens, or login functionality.</p>
+<h2>Sharing and hosting</h2>
+<p>The local archive does not intentionally send backed-up Google Drive content
+  to third parties. Google provides the API that the desktop program reads.
+  GitHub Pages hosts this informational website and may process ordinary
+  website-access information under GitHub's own privacy terms; it is not a
+  storage location for Google Drive backups.</p>
+<h2>Retention and deletion</h2>
+<p>Local copies are retained until the account owner deletes them. Revoking
+  the application's Google Account authorization stops future API access;
+  it does not automatically delete local archival copies. The owner can
+  remove local files and the locally stored OAuth credentials separately.</p>
+<h2>Security and contact</h2>
+<p>Access to OAuth credentials and backed-up files is controlled by permissions
+  on the account owner's machine. The source code is available from the
+  <a href="https://github.com/sguzman/google-drive-rclone">project repository</a>,
+  which also provides its public issue tracker for project questions.</p>
+  <footer>
+    A personal-use archive configuration built around the independent, open-source rclone tool.
+    Not affiliated with Google or the rclone maintainers.
+  </footer>
+</main>
+<script>
+  const key = 'personal-drive-archive-theme';
+  const select = document.getElementById('theme');
+  const saved = localStorage.getItem(key);
+  const theme = ['system', 'light', 'dark'].includes(saved) ? saved : 'system';
+  select.value = theme;
+  function apply(next) {
+    if (next === 'system') document.body.removeAttribute('data-theme');
+    else document.body.setAttribute('data-theme', next);
+  }
+  apply(theme);
+  select.addEventListener('change', () => {
+    localStorage.setItem(key, select.value);
+    apply(select.value);
+  });
+</script>
+</body>
+</html>
