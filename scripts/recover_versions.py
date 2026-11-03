@@ -123,12 +123,19 @@ def snapshot_present(item, destination):
 
 
 def recover(items, archive, *, runner=subprocess.run, dry_run=True,
-            max_downloads=4, max_bytes=128 * 1024 * 1024):
+            max_downloads=4, max_bytes=128 * 1024 * 1024,
+            only_hashed=False):
     by_id, changed, uncertain = discover(items, archive)
-    summary = dict(changed=len(changed), uncertain=uncertain, existing=0,
-                   downloaded=0, bytes_downloaded=0, pending=0, errors=[])
+    summary = dict(changed=len(changed), uncertain=uncertain,
+                   hashed_changed=sum(bool(i.get('md5Checksum')) for i in changed),
+                   hashless_changed=sum(not i.get('md5Checksum') for i in changed),
+                   existing=0, downloaded=0, bytes_downloaded=0, pending=0,
+                   skipped_hashless=0, errors=[])
     spent = 0
     for item in changed:
+        if only_hashed and not item.get('md5Checksum'):
+            summary['skipped_hashless'] += 1
+            continue
         destination = version_path(item, by_id, archive)
         if not safety_check(destination, archive):
             summary['errors'].append('Unsafe destination for cloud ID ' + item['id'])
@@ -191,6 +198,8 @@ def main():
     parser.add_argument('--archive', type=Path, default=DEFAULT_ROOT)
     parser.add_argument('--max-downloads', type=int, default=4)
     parser.add_argument('--max-total-bytes', type=int, default=128 * 1024 * 1024)
+    parser.add_argument('--only-hashed', action='store_true',
+                        help='recover only binary versions verifiable against Drive MD5')
     parser.add_argument('--after-main-copy', action='store_true')
     args = parser.parse_args()
     if args.max_downloads < 1 or args.max_total_bytes < 1:
@@ -221,7 +230,8 @@ def main():
             return 0
     items = query()
     summary = recover(items, args.archive, dry_run=args.action == 'scan',
-                      max_downloads=args.max_downloads, max_bytes=args.max_total_bytes)
+                      max_downloads=args.max_downloads, max_bytes=args.max_total_bytes,
+                      only_hashed=args.only_hashed)
     print('VERSION SUMMARY:', json.dumps(summary, ensure_ascii=False))
     if summary['uncertain']:
         print('WARNING: Some existing files lack safe metadata or path matching; '
