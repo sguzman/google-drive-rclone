@@ -16,12 +16,72 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
+import time
 
 from recover_duplicates import (
     DEFAULT_ROOT, FOLDER, GOOGLE_EXPORT_EXTENSIONS, SHORTCUT,
     digest_id, file_matches, folder_components, is_disk_mounted,
     md5_file, output_name, plan, query, safe_name, safety_check,
 )
+
+
+SNAPSHOT_NAME = '.version-inventory.json'
+SNAPSHOT_SECONDS = 30 * 60
+
+
+def snapshot_path(archive):
+    return archive / '.rclone-versions' / SNAPSHOT_NAME
+
+
+def save_snapshot(items, archive, *, clock=time.time):
+    """Opt-in local metadata cache, never inside Git or the main archive."""
+    parent = archive / '.rclone-versions'
+    if archive.is_symlink() or parent.is_symlink():
+        raise RuntimeError('Refusing symlink in version snapshot directory')
+    parent.mkdir(mode=0o700, exist_ok=True)
+    path = snapshot_path(archive)
+    if path.is_symlink():
+        raise RuntimeError('Refusing symlink version snapshot')
+    fd, temporary = tempfile.mkstemp(prefix='.inventory-', dir=parent)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            json.dump({'version': 1, 'created': clock(), 'items': items},
+                      stream, ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return path
+
+
+def read_snapshot(archive, *, clock=time.time):
+    """Reject missing, stale, symlinked, or malformed source metadata."""
+    parent = archive / '.rclone-versions'
+    path = snapshot_path(archive)
+    if archive.is_symlink() or parent.is_symlink() or path.is_symlink():
+        raise RuntimeError('Refusing symlink in version snapshot')
+    if not path.is_file():
+        raise RuntimeError('Version snapshot missing; run scan --save-snapshot first')
+    metadata = path.stat()
+    if metadata.st_mode & 0o077:
+        raise RuntimeError('Version snapshot permissions are too broad')
+    data = json.loads(path.read_text(encoding='utf-8'))
+    if not isinstance(data, dict) or data.get('version') != 1:
+        raise RuntimeError('Invalid version snapshot format')
+    created = data.get('created')
+    if (not isinstance(created, (float, int)) or isinstance(created, bool)
+            or not 0 <= clock() - created <= SNAPSHOT_SECONDS):
+        raise RuntimeError('Version snapshot stale or future-dated; rerun the scan')
+    items = data.get('items')
+    if (not isinstance(items, list)
+            or any(not isinstance(x, dict) or not isinstance(x.get('id'), str)
+                   or not x['id'] or not isinstance(x.get('name'), str)
+                   for x in items)):
+        raise RuntimeError('Invalid version snapshot contents')
+    return items
 
 
 def source_token(item):
@@ -208,24 +268,42 @@ def main():
     parser.add_argument('--max-total-bytes', type=int, default=128 * 1024 * 1024)
     parser.add_argument('--only-hashed', action='store_true',
                         help='recover only binary versions verifiable against Drive MD5')
+    parser.add_argument('--save-snapshot', action='store_true',
+                        help='scan: save private short-lived inventory for a later recovery')
+    parser.add_argument('--use-snapshot', action='store_true',
+                        help='recover: reuse recent scan without a second Drive API query')
     parser.add_argument('--after-main-copy', action='store_true')
     args = parser.parse_args()
     if args.max_downloads < 1 or args.max_total_bytes < 1:
         parser.error('Limits must be positive')
     if args.after_main_copy and args.action != 'recover':
         parser.error('--after-main-copy requires recover')
+    if args.save_snapshot and args.action != 'scan':
+        parser.error('--save-snapshot is only valid for scan')
+    if args.use_snapshot and args.action != 'recover':
+        parser.error('--use-snapshot is only valid for recover')
     lock = None
-    if args.action == 'recover':
+    if args.action == 'recover' or args.save_snapshot:
         if not is_disk_mounted() or args.archive.resolve() != DEFAULT_ROOT or args.archive.is_symlink():
             raise RuntimeError('Expected /drive/gdrive on the ext4 mount')
         if not args.archive.is_dir() or not os.access(args.archive, os.W_OK):
             raise RuntimeError('Archive directory is not writable')
-        if not args.after_main_copy:
+        if args.action == 'recover' and not args.after_main_copy:
             active = subprocess.run(['systemctl', '--user', 'is-active',
                                      '--quiet', 'google-drive-rclone.service'],
                                     capture_output=True)
             if active.returncode == 0:
                 raise RuntimeError('Ordinary Google Drive copy is active')
+        if args.action != 'recover':
+            items = query()
+            save_snapshot(items, args.archive)
+            summary = recover(items, args.archive, dry_run=True,
+                              max_downloads=args.max_downloads,
+                              max_bytes=args.max_total_bytes,
+                              only_hashed=args.only_hashed)
+            print('VERSION SUMMARY:', json.dumps(summary, ensure_ascii=False))
+            print('Saved private version inventory (expires in 30 minutes)')
+            return 1 if summary['errors'] else 0
         lockroot = args.archive / '.rclone-duplicates'
         if lockroot.is_symlink():
             raise RuntimeError('Recovery lock directory is a symlink')
@@ -236,7 +314,7 @@ def main():
         except BlockingIOError:
             print('Another recovery pass holds the lock; skipping')
             return 0
-    items = query()
+    items = read_snapshot(args.archive) if args.use_snapshot else query()
     summary = recover(items, args.archive, dry_run=args.action == 'scan',
                       max_downloads=args.max_downloads, max_bytes=args.max_total_bytes,
                       only_hashed=args.only_hashed)
