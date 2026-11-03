@@ -136,6 +136,40 @@ class VersionTests(unittest.TestCase):
             _, conflicts, _ = versions.discover([a, b], archive)
             self.assertEqual(conflicts, [])
 
+    def test_one_file_limit_counts_failed_attempts(self):
+        with TemporaryDirectory() as directory:
+            archive = Path(directory)
+            first = source(oid='a', name='a.bin', data=b'new')
+            second = source(oid='b', name='b.bin', data=b'fresh')
+            (archive / 'a.bin').write_bytes(b'old')
+            (archive / 'b.bin').write_bytes(b'old')
+            calls = []
+
+            def fail_copy(cmd, **kwargs):
+                calls.append(cmd)
+                return type('Result', (), {'returncode': 7, 'stderr': 'failure'})()
+
+            report = versions.recover([first, second], archive, runner=fail_copy,
+                                      dry_run=False, max_downloads=1,
+                                      max_bytes=8 * 1024 * 1024, only_hashed=True)
+            self.assertEqual(report['attempted'], 1)
+            self.assertEqual(report['downloaded'], 0)
+            self.assertEqual(len(calls), 1)
+            self.assertTrue(report['errors'])
+            self.assertEqual((archive / 'a.bin').read_bytes(), b'old')
+            self.assertEqual((archive / 'b.bin').read_bytes(), b'old')
+
+    def test_broken_version_symlink_blocks_writes(self):
+        with TemporaryDirectory() as directory:
+            archive = Path(directory)
+            item = source()
+            (archive / item['name']).write_bytes(b'old')
+            destination = versions.version_path(item, {item['id']: item}, archive)
+            destination.parent.mkdir(parents=True)
+            destination.symlink_to(archive / 'does-not-exist')
+            with self.assertRaisesRegex(ValueError, 'Refusing symlink'):
+                versions.snapshot_present(item, destination)
+
     def test_untrusted_symlinks_not_downloaded(self):
         with TemporaryDirectory() as directory:
             archive = Path(directory)
