@@ -260,6 +260,12 @@ def recover(items, archive, *, runner=subprocess.run, dry_run=True,
     return summary
 
 
+def complete_summary(summary):
+    """Fail closed before a copy that ignores existing destination files."""
+    return not (summary['pending'] or summary['uncertain'] or
+                summary['errors'] or summary['skipped_hashless'])
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('scan', 'recover'))
@@ -273,11 +279,15 @@ def main():
     parser.add_argument('--use-snapshot', action='store_true',
                         help='recover: reuse recent scan without a second Drive API query')
     parser.add_argument('--after-main-copy', action='store_true')
+    parser.add_argument('--in-service', action='store_true',
+                        help='called by the serialized systemd copy service')
+    parser.add_argument('--require-complete', action='store_true',
+                        help='fail unless all detected revisions have been preserved')
     args = parser.parse_args()
     if args.max_downloads < 1 or args.max_total_bytes < 1:
         parser.error('Limits must be positive')
-    if args.after_main_copy and args.action != 'recover':
-        parser.error('--after-main-copy requires recover')
+    if (args.after_main_copy or args.in_service or args.require_complete) and args.action != 'recover':
+        parser.error('service and completion flags require recover')
     if args.save_snapshot and args.action != 'scan':
         parser.error('--save-snapshot is only valid for scan')
     if args.use_snapshot and args.action != 'recover':
@@ -288,7 +298,7 @@ def main():
             raise RuntimeError('Expected /drive/gdrive on the ext4 mount')
         if not args.archive.is_dir() or not os.access(args.archive, os.W_OK):
             raise RuntimeError('Archive directory is not writable')
-        if args.action == 'recover' and not args.after_main_copy:
+        if args.action == 'recover' and not (args.after_main_copy or args.in_service):
             active = subprocess.run(['systemctl', '--user', 'is-active',
                                      '--quiet', 'google-drive-rclone.service'],
                                     capture_output=True)
@@ -322,6 +332,11 @@ def main():
     if summary['uncertain']:
         print('WARNING: Some existing files lack safe metadata or path matching; '
               'these need manual review.', file=sys.stderr)
+    if args.require_complete and not complete_summary(summary):
+        print('ERROR: Refusing ordinary copy while version preservation is incomplete '
+              '(pending={pending}, uncertain={uncertain}, skipped_hashless={skipped_hashless}, '
+              'errors={errors})'.format(**summary), file=sys.stderr)
+        return 1
     return 1 if summary['errors'] else 0
 
 
