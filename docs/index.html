@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Home — Personal Drive Archive</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; line-height: 1.65; }
+    body { margin: 0; background: #f7f8f7; color: #1c2521; }
+    body[data-theme="dark"] { color-scheme: dark; background: #141a18; color: #e9eee9; }
+    body[data-theme="light"] { color-scheme: light; background: #f7f8f7; color: #1c2521; }
+    @media (prefers-color-scheme: dark) {
+      body:not([data-theme]) { background: #141a18; color: #e9eee9; }
+    }
+    a { color: #297652; }
+    body[data-theme="dark"] a { color: #86cfa8; }
+    @media (prefers-color-scheme: dark) { body:not([data-theme]) a { color: #86cfa8; } }
+    main { max-width: 720px; padding: 24px; margin: 32px auto 64px; }
+    header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+    nav { display: flex; gap: 16px; }
+    nav a { font-weight: 600; }
+    label { font-size: .875rem; }
+    select { font: inherit; margin-left: 6px; padding: 6px; border-radius: 7px; }
+    h1 { font-size: clamp(2rem, 5vw, 2.7rem); line-height: 1.2; margin-top: 48px; }
+    h2 { font-size: 1.25rem; margin-top: 36px; }
+    p, li { max-width: 65ch; }
+    footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid #8885; font-size: .9rem; }
+    code { font-size: .9em; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <nav aria-label="Main navigation">
+      <a href="./">Home</a>
+      <a href="privacy.html">Privacy policy</a>
+      <a href="https://github.com/sguzman/google-drive-rclone">Source code</a>
+    </nav>
+    <label for="theme">Theme
+      <select id="theme" aria-label="Color theme">
+        <option value="system">System</option>
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+      </select>
+    </label>
+  </header>
+  <h1>Personal Drive Archive</h1>
+<p>This site documents a personal-use Google Drive backup configuration based on
+  <a href="https://rclone.org/">rclone</a>, an open-source command-line file-transfer tool.
+  The desktop OAuth client authorizes the account owner to download their own Google Drive files.</p>
+<h2>What the application does</h2>
+<p>After the account owner authorizes Google Drive access, rclone runs locally and
+  copies files from that account's Google Drive to a local storage disk.
+  The configuration uses the <code>drive.readonly</code> permission, which allows
+  reading file contents and metadata but does not grant permission to change
+  or delete cloud files.</p>
+<p>This website is documentation only. It does not provide an online login,
+  receive Google OAuth tokens, or proxy Google Drive content.
+  The software runs on the account owner's computer.</p>
+<h2>Data and privacy</h2>
+<p>See the <a href="privacy.html">privacy policy</a> for how Google user data is
+  accessed, stored, retained and controlled in this setup.</p>
+<h2>Implementation</h2>
+<p>The archive scripts and their operation are documented in the public
+  <a href="https://github.com/sguzman/google-drive-rclone">source repository</a>.
+  The private OAuth credentials and backed-up personal files are not in that repository.</p>
+  <footer>
+    A personal-use archive configuration built around the independent, open-source rclone tool.
+    Not affiliated with Google or the rclone maintainers.
+  </footer>
+</main>
+<script>
+  const key = 'personal-drive-archive-theme';
+  const select = document.getElementById('theme');
+  const saved = localStorage.getItem(key);
+  const theme = ['system', 'light', 'dark'].includes(saved) ? saved : 'system';
+  select.value = theme;
+  function apply(next) {
+    if (next === 'system') document.body.removeAttribute('data-theme');
+    else document.body.setAttribute('data-theme', next);
+  }
+  apply(theme);
+  select.addEventListener('change', () => {
+    localStorage.setItem(key, select.value);
+    apply(select.value);
+  });
+</script>
+</body>
+</html>
