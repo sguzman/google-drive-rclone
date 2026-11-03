@@ -34,6 +34,23 @@ class FakeCopy:
 
 
 class VersionTests(unittest.TestCase):
+    def test_copy_requires_complete_version_preflight_before_skipping_existing(self):
+        script = (SCRIPTS / 'copy.sh').read_text()
+        self.assertLess(script.index('recover_versions.py'), script.index("rclone copy 'gdrive:'"))
+        self.assertIn('--require-complete', script)
+        self.assertIn('--in-service', script)
+        self.assertIn('--ignore-existing', script)
+        self.assertIn('--immutable', script)
+
+    def test_complete_gate_requires_all_preserved_and_no_uncertainty(self):
+        summary = {'pending': 0, 'uncertain': 0, 'errors': [],
+                   'skipped_hashless': 0}
+        self.assertTrue(versions.complete_summary(summary))
+        for key, value in [('pending', 1), ('uncertain', 1),
+                           ('errors', ['broken copy']), ('skipped_hashless', 1)]:
+            failed = dict(summary, **{key: value})
+            self.assertFalse(versions.complete_summary(failed))
+
     def test_private_short_lived_snapshot_reuses_metadata(self):
         with TemporaryDirectory() as directory:
             archive = Path(directory)
