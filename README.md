@@ -2,7 +2,7 @@
 
 A **one-way, low-bandwidth Google Drive archive** for Linux. The source is the configured rclone `gdrive:` remote and the destination is **`/drive/gdrive`**.
 
-This is not a bidirectional sync. It intentionally never uploads to Google Drive and never deletes files locally. Existing local files are immutable: if an upstream file changes, rclone reports a conflict rather than overwriting the archival copy.
+This is not a bidirectional sync. It intentionally never uploads to Google Drive and never deletes files locally. Existing local files are immutable: newer cloud revisions are preserved separately under `.rclone-versions/` before the regular copy skips existing originals. The automatic service fails closed if it cannot preserve every detected change.
 
 ## Prerequisites
 
@@ -156,10 +156,11 @@ The suffixes are illustrative, not actual Drive IDs. A directory is suffixed onl
 
 ### Unattended recovery
 
-The normal `google-drive-rclone.service` runs two stages **sequentially**:
+The normal `google-drive-rclone.service` runs three stages **sequentially**:
 
-1. Ordinary immutable `rclone copy` at 512 KiB/s.
-2. **Only after that copy succeeds**, a collision-recovery pass using immutable file IDs, at most **5,000 files and a nominal 128 MiB of source data per run** (same 512 KiB/s rate cap).
+1. Query Drive and preserve changed revisions of existing files under `.rclone-versions/` (at most 16 new files and a nominal 128 MiB of source data). **If any detected revision remains pending, has uncertain metadata, or fails verification, stop without starting the normal copy.**
+2. After that preflight succeeds, copy only missing files with `rclone copy --immutable --ignore-existing` at 512 KiB/s. This leaves every existing original untouched, including older revisions. **The version preflight is mandatory: running the copy stage alone with `--ignore-existing` would silently miss updates.**
+3. **Only after that copy succeeds**, run collision recovery using immutable file IDs, at most **5,000 files and a nominal 128 MiB of source data per run** (same 512 KiB/s rate cap).
 
 This is implemented in the version-controlled `scripts/copy.sh`; the existing service and timer remain in place. Updating your checkout is enough because the installed launcher is a symlink to the repository script.
 
@@ -180,53 +181,49 @@ No new systemd unit or installer rerun is needed. If a full normal pass is curre
 
 The recovery scanner re-queries Drive on each pass to recognize newly added Takeout ZIPs and any newer collision state. Because the data is static, no changes to the source are expected.
 
-### Changed-file conflicts (staged; not yet enabled)
+### Changed-file conflicts (automatic version preservation)
 
-The main archive uses `--immutable`, so if a cloud file changes after
-its local counterpart was saved, the ordinary copy reports an error
-rather than overwriting historical bytes. **Do not delete the existing
-copy or disable immutability to silence this error.**
+The main archive always keeps its original bytes. If an upstream Drive file
+changes, the service first preserves the current cloud revision under
+`/drive/gdrive/.rclone-versions/` using its immutable Drive file ID and
+revision token, alongside a source-provenance sidecar. Binary revisions
+with a cloud MD5 are verified against that checksum. Google Workspace
+exports lack cloud MD5; they are detected by modification time, and the
+download is recorded with a local checksum. Those timestamp differences
+are *candidates*, not definitive proof of a content change.
 
-A separate version-preservation tool is staged at
-`scripts/recover_versions.py`. First validate it **read-only**:
+After version recovery succeeds completely, rclone skips existing
+originals (`--ignore-existing`) while continuing to download newly added
+files. No originals are deleted or overwritten, and no files are uploaded
+to Google. The version stage is not optional: without it, `--ignore-existing`
+can silently miss changed files and interrupted partial transfers.
+For that reason the service aborts when the source inventory is unavailable,
+when recovery reports uncertainty/errors, or when any changed version
+remains pending. Large or unsupported revisions may need manual inspection
+and can temporarily block the normal backup.
+
+A recovery pass is bounded by 16 attempted new versions and a nominal
+128 MiB source-byte budget; unknown-size Google Workspace exports can
+exceed the nominal byte budget. Transfers are rate-limited to 512 KiB/s.
+The duplicate-recovery stage remains sequential and unchanged.
+
+The version stage was initially validated manually with unit tests and
+seven real archived revision candidates. Future cloud changes are still
+subject to ordinary runtime validation; a successful unit test alone does
+not prove the entire archive complete. Do not store Drive metadata, files,
+OAuth secrets, or client credentials in this public repository.
+
+Read-only manual inspection:
 
 ```fish
-python3 -m unittest discover -s tests -v
 python3 scripts/recover_versions.py scan
 ```
 
-The scan compares checksum-bearing binary files and modified timestamps
-for hashless Google Workspace exports, and reports changed, previously
-archived sources. It does not download anything. A version scan
-may flag more sources than `rclone copy --immutable` reports as
-conflicts, because they perform different comparisons. A timestamp mismatch
-is **not proof that an exported Google Workspace document's bytes changed**;
-the scanner now reports counts by checksum availability.
+Manual bounded recovery (not necessary for normal unattended operation):
 
-After unit tests, validate a single small checksum-backed
-cloud revision without touching the original. Use the opt-in
-snapshot/reuse pair documented below to avoid repeating a full remote
-query immediately after a successful scan.
-
-The recovery uses a single `rclone backend copyid` at 512 KiB/s, verifies
-the cloud MD5, and stores new data only in `/drive/gdrive/.rclone-versions/`
-with an ID+revision-qualified name and sidecar. Files larger than 8 MiB
-and hashless documents are excluded in this first test. A zero-download
-result is possible if no such eligible source exists. **Do not enable
-automatic recovery solely based on this one-file test.** The optional recovery
-command uses immutable Drive file IDs and stores cloud revisions in
-`/drive/gdrive/.rclone-versions/` with a source-provenance sidecar. It
-never replaces the original `/drive/gdrive` file. For hashless Workspace
-exports, modification-time comparison is a heuristic rather than proof
-that exported bytes differ. Rclone name sanitization and unsupported
-source metadata can also require manual review.
-
-**The copy service is intentionally unchanged at this stage.** After
-the scanner and unit tests have passed on the real archive, wire the
-version-preserving stage into the normal copy sequence. Only then can
-the main copy skip existing local files without silently losing new
-cloud versions. No names or contents of personal conflict files belong
-in this public repository.
+```fish
+python3 scripts/recover_versions.py recover --max-downloads 1 --max-total-bytes 8388608
+```
 
 ## Avoid repeated Google Drive inventories while validating versions
 
