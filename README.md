@@ -197,9 +197,9 @@ python3 scripts/recover_versions.py scan
 
 The scan compares checksum-bearing binary files and modified timestamps
 for hashless Google Workspace exports, and reports changed, previously
-archived sources. It does not download anything. In one live dry run,
-seven sources were flagged as possible changes (zero uncertain), although
-only two triggered `rclone copy --immutable` errors. A timestamp mismatch
+archived sources. It does not download anything. A version scan
+may flag more sources than `rclone copy --immutable` reports as
+conflicts, because they perform different comparisons. A timestamp mismatch
 is **not proof that an exported Google Workspace document's bytes changed**;
 the scanner now reports counts by checksum availability.
 
