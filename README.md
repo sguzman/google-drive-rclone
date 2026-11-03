@@ -197,7 +197,26 @@ python3 scripts/recover_versions.py scan
 
 The scan compares checksum-bearing binary files and modified timestamps
 for hashless Google Workspace exports, and reports changed, previously
-archived sources. It does not download anything. The optional recovery
+archived sources. It does not download anything. In one live dry run,
+seven sources were flagged as possible changes (zero uncertain), although
+only two triggered `rclone copy --immutable` errors. A timestamp mismatch
+is **not proof that an exported Google Workspace document's bytes changed**;
+the scanner now reports counts by checksum availability.
+
+After unit tests and a fresh scan, validate a single small checksum-backed
+cloud revision without touching the original:
+
+```fish
+python3 scripts/recover_versions.py scan --only-hashed
+python3 scripts/recover_versions.py recover --only-hashed --max-downloads 1 --max-total-bytes 8388608
+```
+
+The recovery uses a single `rclone backend copyid` at 512 KiB/s, verifies
+the cloud MD5, and stores new data only in `/drive/gdrive/.rclone-versions/`
+with an ID+revision-qualified name and sidecar. Files larger than 8 MiB
+and hashless documents are excluded in this first test. A zero-download
+result is possible if no such eligible source exists. **Do not enable
+automatic recovery solely based on this one-file test.** The optional recovery
 command uses immutable Drive file IDs and stores cloud revisions in
 `/drive/gdrive/.rclone-versions/` with a source-provenance sidecar. It
 never replaces the original `/drive/gdrive` file. For hashless Workspace
