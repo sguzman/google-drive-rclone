@@ -101,6 +101,32 @@ class VersionTests(unittest.TestCase):
             self.assertEqual(report['downloaded'], 1)
             self.assertEqual(original.read_bytes(), b'old export')
 
+    def test_checksum_only_mode_skips_native_exports_and_preserves_binary(self):
+        with TemporaryDirectory() as directory:
+            archive = Path(directory)
+            binary = source(oid='binary', name='binary.dat', data=b'fresh')
+            (archive / 'binary.dat').write_bytes(b'old')
+            native = {'id': 'native', 'name': 'Sheet', 'parents': [],
+                      'mimeType': 'application/vnd.google-apps.spreadsheet',
+                      'modifiedTime': '2026-10-01T10:00:00Z'}
+            old_export = archive / 'Sheet.xlsx'
+            old_export.write_bytes(b'old export')
+            os.utime(old_export, (0, 0))
+            runner = FakeCopy(b'fresh')
+            result = versions.recover([binary, native], archive, runner=runner,
+                                      dry_run=False, max_downloads=1,
+                                      max_bytes=8 * 1024 * 1024,
+                                      only_hashed=True)
+            self.assertEqual(result['hashed_changed'], 1)
+            self.assertEqual(result['hashless_changed'], 1)
+            self.assertEqual(result['skipped_hashless'], 1)
+            self.assertEqual(result['downloaded'], 1)
+            self.assertEqual(result['bytes_downloaded'], 5)
+            self.assertEqual(result['errors'], [])
+            self.assertEqual(len(runner.calls), 1)
+            self.assertEqual(old_export.read_bytes(), b'old export')
+            self.assertEqual((archive / 'binary.dat').read_bytes(), b'old')
+
     def test_duplicate_ids_not_confused_with_version_conflicts(self):
         with TemporaryDirectory() as directory:
             archive = Path(directory)
