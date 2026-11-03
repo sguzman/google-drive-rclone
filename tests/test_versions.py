@@ -34,6 +34,42 @@ class FakeCopy:
 
 
 class VersionTests(unittest.TestCase):
+    def test_private_short_lived_snapshot_reuses_metadata(self):
+        with TemporaryDirectory() as directory:
+            archive = Path(directory)
+            items = [source()]
+            destination = versions.save_snapshot(items, archive, clock=lambda: 1000)
+            self.assertEqual(destination.parent, archive / '.rclone-versions')
+            self.assertEqual(destination.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(versions.read_snapshot(archive, clock=lambda: 1010), items)
+            with self.assertRaisesRegex(RuntimeError, 'stale'):
+                versions.read_snapshot(archive, clock=lambda: 1000 + 1801)
+
+    def test_snapshot_rejects_symlink_and_untrusted_permissions(self):
+        with TemporaryDirectory() as directory:
+            archive = Path(directory)
+            destination = versions.save_snapshot([source()], archive)
+            destination.chmod(0o644)
+            with self.assertRaisesRegex(RuntimeError, 'permissions'):
+                versions.read_snapshot(archive)
+            destination.unlink()
+            destination.symlink_to('/etc/hosts')
+            with self.assertRaisesRegex(RuntimeError, 'symlink'):
+                versions.read_snapshot(archive)
+            with self.assertRaisesRegex(RuntimeError, 'symlink'):
+                versions.save_snapshot([source()], archive)
+
+    def test_snapshot_rejects_corrupt_and_future_metadata(self):
+        with TemporaryDirectory() as directory:
+            archive = Path(directory)
+            destination = versions.save_snapshot([source()], archive, clock=lambda: 100)
+            destination.write_text('{"version":1,"created":99999,"items":[]}')
+            with self.assertRaisesRegex(RuntimeError, 'stale or future-dated'):
+                versions.read_snapshot(archive, clock=lambda: 100)
+            destination.write_text('{"version":1,"created":100,"items":[42]}')
+            with self.assertRaisesRegex(RuntimeError, 'Invalid version snapshot contents'):
+                versions.read_snapshot(archive, clock=lambda: 100)
+
     def test_same_cloud_version_skipped(self):
         with TemporaryDirectory() as directory:
             archive = Path(directory)
