@@ -108,6 +108,8 @@ def discover(items, archive):
 
 def snapshot_present(item, destination):
     sidecar = destination.with_name(destination.name + '.source.json')
+    if destination.is_symlink() or sidecar.is_symlink():
+        raise ValueError('Refusing symlink in versioned archive')
     if not destination.exists() and not sidecar.exists():
         return False
     if destination.is_symlink() or sidecar.is_symlink() or not destination.is_file() or not sidecar.is_file():
@@ -129,9 +131,11 @@ def recover(items, archive, *, runner=subprocess.run, dry_run=True,
     summary = dict(changed=len(changed), uncertain=uncertain,
                    hashed_changed=sum(bool(i.get('md5Checksum')) for i in changed),
                    hashless_changed=sum(not i.get('md5Checksum') for i in changed),
-                   existing=0, downloaded=0, bytes_downloaded=0, pending=0,
+                   existing=0, attempted=0, downloaded=0,
+                   bytes_downloaded=0, pending=0,
                    skipped_hashless=0, errors=[])
     spent = 0
+    planned = 0
     for item in changed:
         if only_hashed and not item.get('md5Checksum'):
             summary['skipped_hashless'] += 1
@@ -148,7 +152,7 @@ def recover(items, archive, *, runner=subprocess.run, dry_run=True,
             summary['errors'].append(str(exc))
             continue
         summary['pending'] += 1
-        if dry_run or summary['downloaded'] >= max_downloads:
+        if dry_run or summary['attempted'] >= max_downloads:
             continue
         size = item.get('size')
         try:
@@ -157,8 +161,12 @@ def recover(items, archive, *, runner=subprocess.run, dry_run=True,
                 count = None
         except (TypeError, ValueError):
             count = None
-        if spent >= max_bytes or (count is not None and count > max_bytes - spent):
+        if planned >= max_bytes or (count is not None and count > max_bytes - planned):
             continue  # Not an unlimited oversize downloader; defer large revisions.
+        if count is None and only_hashed:
+            continue  # The limited sample requires a known finite byte count.
+        summary['attempted'] += 1
+        planned += count if count is not None else max_bytes
         try:
             destination.parent.mkdir(parents=True, exist_ok=True)
             command = ['rclone', 'backend', 'copyid', 'gdrive:', item['id'],
